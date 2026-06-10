@@ -448,17 +448,6 @@ async def initialize_base_tools(config: Config):
             )
         )
 
-    if config.tools.enable_vector_memory:
-        tools.extend(
-            create_vector_memory_tools(
-                workspace_dir=config.agent.workspace_dir,
-                persist_dir=config.tools.vector_memory.persist_dir,
-                embedding_model=config.tools.vector_memory.embedding_model,
-                collection_name=config.tools.vector_memory.collection_name,
-                top_k=config.tools.vector_memory.top_k,
-            )
-        )
-
     return tools, skill_loader
 
 
@@ -496,6 +485,19 @@ def add_workspace_tools(tools: List[Tool], config: Config, workspace_dir: Path):
     if config.tools.enable_note:
         tools.append(SessionNoteTool(memory_file=str(workspace_dir / ".agent_memory.json")))
         print(f"{Colors.GREEN}✅ Loaded session note tool{Colors.RESET}")
+
+    # Vector memory tools - scoped to the actual workspace path
+    if config.tools.enable_vector_memory:
+        tools.extend(
+            create_vector_memory_tools(
+                workspace_dir=str(workspace_dir),
+                persist_dir=config.tools.vector_memory.persist_dir,
+                embedding_model=config.tools.vector_memory.embedding_model,
+                collection_name=config.tools.vector_memory.collection_name,
+                top_k=config.tools.vector_memory.top_k,
+            )
+        )
+        print(f"{Colors.GREEN}✅ Loaded vector memory tools (Chroma){Colors.RESET}")
 
 
 async def _quiet_cleanup():

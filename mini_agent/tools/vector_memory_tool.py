@@ -85,9 +85,13 @@ class ChromaVectorMemoryStore:
         else:
             where = {"workspace_id": workspace_id}
 
+        count = self.collection.count()
+        if count == 0:
+            return []
+
         data = self.collection.query(
             query_embeddings=[query_embedding],
-            n_results=max(1, top_k),
+            n_results=min(max(1, top_k), count),
             where=where,
             include=["documents", "metadatas", "distances"],
         )
@@ -208,12 +212,23 @@ class SemanticRecallTool(Tool):
 
     async def execute(self, query: str, top_k: int | None = None, category: str | None = None) -> ToolResult:
         try:
+            result_limit = top_k or self.default_top_k
             results = self.store.query(
                 query_embedding=self.embedder.embed(query),
                 workspace_id=self.workspace_id,
-                top_k=top_k or self.default_top_k,
+                top_k=result_limit,
                 category=category,
             )
+            used_fallback = False
+            if not results and category:
+                results = self.store.query(
+                    query_embedding=self.embedder.embed(query),
+                    workspace_id=self.workspace_id,
+                    top_k=result_limit,
+                    category=None,
+                )
+                used_fallback = bool(results)
+
             if not results:
                 return ToolResult(success=True, content="No relevant semantic notes found.")
 
@@ -223,7 +238,10 @@ class SemanticRecallTool(Tool):
                     f"{idx}. [score={item['score']}] [{item.get('category', 'general')}] {item.get('content', '')}\n"
                     f"   recorded at {item.get('timestamp', 'unknown')}"
                 )
-            return ToolResult(success=True, content="Relevant semantic notes:\n" + "\n".join(lines))
+            prefix = "Relevant semantic notes:"
+            if used_fallback:
+                prefix = f"No notes found in category '{category}'. Relevant semantic notes from all categories:"
+            return ToolResult(success=True, content=prefix + "\n" + "\n".join(lines))
         except Exception as e:
             return ToolResult(success=False, content="", error=f"Failed to recall semantic notes: {e}")
 

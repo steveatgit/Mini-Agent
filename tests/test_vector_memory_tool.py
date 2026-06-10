@@ -27,7 +27,11 @@ async def test_chroma_vector_memory_record_and_recall(tmp_path, monkeypatch):
 
     record_result = await record_tool.execute("Mini-Agent 使用 Chroma 作为向量记忆后端", category="architecture")
     recall_result = await recall_tool.execute("当前项目的记忆后端是什么？")
+    fallback_result = await recall_tool.execute("当前项目的记忆后端是什么？", category="wrong_category")
 
     assert record_result.success
     assert recall_result.success
+    assert fallback_result.success
     assert "Chroma" in recall_result.content
+    assert "Chroma" in fallback_result.content
+    assert "wrong_category" in fallback_result.content
