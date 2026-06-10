@@ -35,8 +35,11 @@ from mini_agent.tools.base import Tool
 from mini_agent.tools.bash_tool import BashKillTool, BashOutputTool, BashTool
 from mini_agent.tools.file_tools import EditTool, ReadTool, WriteTool
 from mini_agent.tools.mcp_loader import cleanup_mcp_connections, load_mcp_tools_async, set_mcp_timeout_config
-from mini_agent.tools.note_tool import SessionNoteTool
+from mini_agent.tools.jira_reader_tool import JiraReaderTool
+from mini_agent.tools.note_tool import RecallNoteTool, SessionNoteTool, create_note_tools
 from mini_agent.tools.skill_tool import create_skill_tools
+from mini_agent.tools.vector_memory_tool import create_vector_memory_tools
+from mini_agent.tools.web_search_tool import WebSearchTool
 from mini_agent.utils import calculate_display_width
 
 
@@ -428,6 +431,33 @@ async def initialize_base_tools(config: Config):
             print(f"{Colors.YELLOW}⚠️  Failed to load MCP tools: {e}{Colors.RESET}")
 
     print()  # Empty line separator
+    if config.tools.enable_web_search:
+        tools.append(
+            WebSearchTool(
+                api_key=config.tools.web_search.api_key,
+                endpoint=config.tools.web_search.endpoint,
+            )
+        )
+
+    if config.tools.enable_jira_reader:
+        tools.append(
+            JiraReaderTool(
+                base_url=config.tools.jira.base_url,
+                email=config.tools.jira.email,
+                api_token=config.tools.jira.api_token,
+            )
+        )
+
+    if config.tools.enable_vector_memory:
+        tools.extend(
+            create_vector_memory_tools(
+                workspace_dir=config.agent.workspace_dir,
+                persist_dir=config.tools.vector_memory.persist_dir,
+                collection_name=config.tools.vector_memory.collection_name,
+                top_k=config.tools.vector_memory.top_k,
+            )
+        )
+
     return tools, skill_loader
 
 

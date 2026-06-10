@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .base import Tool, ToolResult
+from .memory_path import get_workspace_memory_file
 
 
 class SessionNoteTool(Tool):
@@ -28,13 +29,13 @@ class SessionNoteTool(Tool):
     - recall_notes() -> retrieves all recorded notes
     """
 
-    def __init__(self, memory_file: str = "./workspace/.agent_memory.json"):
+    def __init__(self, memory_file: str | None = None):
         """Initialize session note tool.
 
         Args:
             memory_file: Path to the note storage file
         """
-        self.memory_file = Path(memory_file)
+        self.memory_file = Path(memory_file) if memory_file else get_workspace_memory_file(".")
         # Lazy loading: file and directory are only created when first note is recorded
 
     @property
@@ -75,7 +76,10 @@ class SessionNoteTool(Tool):
             return []
         
         try:
-            return json.loads(self.memory_file.read_text())
+            data = json.loads(self.memory_file.read_text())
+            if isinstance(data, dict):
+                return data.get("notes", [])
+            return data
         except Exception:
             return []
 
@@ -86,7 +90,11 @@ class SessionNoteTool(Tool):
         """
         # Ensure parent directory exists when actually saving
         self.memory_file.parent.mkdir(parents=True, exist_ok=True)
-        self.memory_file.write_text(json.dumps(notes, indent=2, ensure_ascii=False))
+        payload = {
+            "memory_file": str(self.memory_file),
+            "notes": notes,
+        }
+        self.memory_file.write_text(json.dumps(payload, indent=2, ensure_ascii=False))
 
     async def execute(self, content: str, category: str = "general") -> ToolResult:
         """Record a session note.
@@ -128,13 +136,13 @@ class SessionNoteTool(Tool):
 class RecallNoteTool(Tool):
     """Tool for recalling recorded session notes."""
 
-    def __init__(self, memory_file: str = "./workspace/.agent_memory.json"):
+    def __init__(self, memory_file: str | None = None):
         """Initialize recall note tool.
 
         Args:
             memory_file: Path to the note storage file
         """
-        self.memory_file = Path(memory_file)
+        self.memory_file = Path(memory_file) if memory_file else get_workspace_memory_file(".")
 
     @property
     def name(self) -> str:
@@ -176,7 +184,8 @@ class RecallNoteTool(Tool):
                     content="No notes recorded yet.",
                 )
 
-            notes = json.loads(self.memory_file.read_text())
+            data = json.loads(self.memory_file.read_text())
+            notes = data.get("notes", []) if isinstance(data, dict) else data
 
             if not notes:
                 return ToolResult(
@@ -211,3 +220,12 @@ class RecallNoteTool(Tool):
                 content="",
                 error=f"Failed to recall notes: {str(e)}",
             )
+
+
+def create_note_tools(workspace_dir: str) -> list[Tool]:
+    """Create note tools backed by a workspace-isolated memory file."""
+    memory_file = get_workspace_memory_file(workspace_dir)
+    return [
+        SessionNoteTool(memory_file=str(memory_file)),
+        RecallNoteTool(memory_file=str(memory_file)),
+    ]

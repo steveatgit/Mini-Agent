@@ -45,6 +45,30 @@ class MCPConfig(BaseModel):
     sse_read_timeout: float = 120.0  # SSE read timeout (seconds)
 
 
+class WebSearchConfig(BaseModel):
+    """Web search tool configuration."""
+
+    api_key: str = ""
+    endpoint: str = "https://api.tavily.com/search"
+
+
+class JiraConfig(BaseModel):
+    """Jira reader tool configuration."""
+
+    base_url: str = ""
+    email: str = ""
+    api_token: str = ""
+
+
+class VectorMemoryConfig(BaseModel):
+    """Vector memory configuration."""
+
+    persist_dir: str = "~/.mini-agent/vector_memory"
+    collection_name: str = "mini_agent_memory"
+    embedding_model: str = "hashing"
+    top_k: int = 5
+
+
 class ToolsConfig(BaseModel):
     """Tools configuration"""
 
@@ -61,6 +85,16 @@ class ToolsConfig(BaseModel):
     enable_mcp: bool = True
     mcp_config_path: str = "mcp.json"
     mcp: MCPConfig = Field(default_factory=MCPConfig)
+
+    # External tools
+    enable_web_search: bool = False
+    web_search: WebSearchConfig = Field(default_factory=WebSearchConfig)
+    enable_jira_reader: bool = False
+    jira: JiraConfig = Field(default_factory=JiraConfig)
+
+    # Semantic memory
+    enable_vector_memory: bool = False
+    vector_memory: VectorMemoryConfig = Field(default_factory=VectorMemoryConfig)
 
 
 class Config(BaseModel):
@@ -146,6 +180,27 @@ class Config(BaseModel):
             sse_read_timeout=mcp_data.get("sse_read_timeout", 120.0),
         )
 
+        web_search_data = tools_data.get("web_search", {})
+        web_search_config = WebSearchConfig(
+            api_key=web_search_data.get("api_key", ""),
+            endpoint=web_search_data.get("endpoint", "https://api.tavily.com/search"),
+        )
+
+        jira_data = tools_data.get("jira", {})
+        jira_config = JiraConfig(
+            base_url=jira_data.get("base_url", ""),
+            email=jira_data.get("email", ""),
+            api_token=jira_data.get("api_token", ""),
+        )
+
+        vector_memory_data = tools_data.get("vector_memory", {})
+        vector_memory_config = VectorMemoryConfig(
+            persist_dir=vector_memory_data.get("persist_dir", "~/.mini-agent/vector_memory"),
+            collection_name=vector_memory_data.get("collection_name", "mini_agent_memory"),
+            embedding_model=vector_memory_data.get("embedding_model", "hashing"),
+            top_k=vector_memory_data.get("top_k", 5),
+        )
+
         tools_config = ToolsConfig(
             enable_file_tools=tools_data.get("enable_file_tools", True),
             enable_bash=tools_data.get("enable_bash", True),
@@ -155,6 +210,12 @@ class Config(BaseModel):
             enable_mcp=tools_data.get("enable_mcp", True),
             mcp_config_path=tools_data.get("mcp_config_path", "mcp.json"),
             mcp=mcp_config,
+            enable_web_search=tools_data.get("enable_web_search", False),
+            web_search=web_search_config,
+            enable_jira_reader=tools_data.get("enable_jira_reader", False),
+            jira=jira_config,
+            enable_vector_memory=tools_data.get("enable_vector_memory", False),
+            vector_memory=vector_memory_config,
         )
 
         return cls(

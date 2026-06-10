@@ -227,8 +227,14 @@ class OpenAIClient(LLMClientBase):
         tool_calls = []
         if message.tool_calls:
             for tool_call in message.tool_calls:
-                # Parse arguments from JSON string
-                arguments = json.loads(tool_call.function.arguments)
+                # Parse arguments from JSON string. Some OpenAI-compatible
+                # providers can return malformed tool-call JSON; keep the
+                # run alive so the bad tool result can be fed back to the LLM.
+                raw_arguments = tool_call.function.arguments or "{}"
+                try:
+                    arguments = json.loads(raw_arguments)
+                except json.JSONDecodeError:
+                    arguments = {"_raw_arguments": raw_arguments}
 
                 tool_calls.append(
                     ToolCall(

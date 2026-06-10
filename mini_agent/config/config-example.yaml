@@ -48,6 +48,27 @@ tools:
   # Claude Skills
   enable_skills: true      # Enable Skills
   skills_dir: "./skills"   # Skills directory path
+
+  # Web search tool
+  enable_web_search: false
+  web_search:
+    api_key: "YOUR_SEARCH_API_KEY_HERE"
+    endpoint: "https://api.tavily.com/search"
+
+  # Jira reader tool
+  enable_jira_reader: false
+  jira:
+    base_url: "https://your-company.atlassian.net"
+    email: "YOUR_EMAIL_HERE"
+    api_token: "YOUR_JIRA_API_TOKEN_HERE"
+
+  # Workspace-scoped semantic memory
+  enable_vector_memory: false
+  vector_memory:
+    persist_dir: "~/.mini-agent/vector_memory"
+    collection_name: "mini_agent_memory"
+    embedding_model: "hashing"
+    top_k: 5
   
   # MCP Tools
   enable_mcp: true         # Enable MCP tools
