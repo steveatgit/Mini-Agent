@@ -7,7 +7,7 @@
 #
 # To use this config:
 # - Copy this file to one of the above locations as config.yaml
-# - Fill in your API key and customize settings as needed
+# - Copy .env.example to .env and fill in your secrets
 # - All config files (config.yaml, mcp.json, system_prompt.md) are in the same directory
 
 # ===== LLM Configuration =====
@@ -16,7 +16,7 @@
 # - Global: https://platform.minimax.io -> api_base: https://api.minimax.io
 # - China: https://platform.minimaxi.com -> api_base: https://api.minimaxi.com
 # Please choose based on your network environment and get API key from corresponding platform
-api_key: "YOUR_API_KEY_HERE"  # Replace with your MiniMax API Key
+api_key: "${MINI_AGENT_API_KEY}"  # Set in .env or process environment
 api_base: "https://api.minimax.io"   # Global users (default)
 # api_base: "https://api.minimaxi.com"  # China users
 model: "MiniMax-M2.5"
@@ -52,15 +52,15 @@ tools:
   # Web search tool
   enable_web_search: false
   web_search:
-    api_key: "YOUR_SEARCH_API_KEY_HERE"
+    api_key: "${TAVILY_API_KEY}"
     endpoint: "https://api.tavily.com/search"
 
   # Jira reader tool
   enable_jira_reader: false
   jira:
-    base_url: "https://your-company.atlassian.net"
-    email: "YOUR_EMAIL_HERE"
-    api_token: "YOUR_JIRA_API_TOKEN_HERE"
+    base_url: "${JIRA_BASE_URL}"
+    email: "${JIRA_EMAIL}"
+    api_token: "${JIRA_API_TOKEN}"
 
   # Workspace-scoped semantic memory
   enable_vector_memory: false

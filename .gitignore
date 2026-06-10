@@ -42,6 +42,9 @@ workspace/
 Thumbs.db
 
 # Config (contains API keys)
+.env
+.env.*
+!.env.example
 config.yaml
 mcp.json
 

@@ -1,12 +1,77 @@
-"""Configuration management module
+"""Configuration management module."""
 
-Provides unified configuration loading and management functionality
-"""
-
+import os
+import re
 from pathlib import Path
+from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field
+
+
+ENV_VAR_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def _strip_env_quotes(value: str) -> str:
+    """Strip matching quotes around a .env value."""
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
+def _load_env_file(env_path: Path) -> None:
+    """Load KEY=VALUE pairs from a .env file without overriding the process env."""
+    if not env_path.exists() or not env_path.is_file():
+        return
+
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        if "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+            continue
+
+        os.environ.setdefault(key, _strip_env_quotes(value))
+
+
+def _load_env_files(config_path: Path) -> None:
+    """Load supported .env locations without overriding higher-priority values."""
+    candidates = [
+        config_path.parent / ".env",
+        Path.cwd() / ".env",
+        Path.home() / ".mini-agent" / "config" / ".env",
+        Path.home() / ".mini-agent" / ".env",
+    ]
+    for env_path in candidates:
+        _load_env_file(env_path)
+
+
+def _expand_env_vars(value: Any) -> Any:
+    """Recursively replace ${VAR_NAME} placeholders in YAML data."""
+    if isinstance(value, str):
+        return ENV_VAR_PATTERN.sub(lambda match: os.environ.get(match.group(1), match.group(0)), value)
+    if isinstance(value, list):
+        return [_expand_env_vars(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _expand_env_vars(item) for key, item in value.items()}
+    return value
+
+
+def _is_missing_secret(value: str, placeholders: set[str]) -> bool:
+    """Return whether a secret value is empty, placeholder text, or unresolved env syntax."""
+    if not value:
+        return True
+    if value in placeholders:
+        return True
+    return bool(ENV_VAR_PATTERN.search(value))
 
 
 class RetryConfig(BaseModel):
@@ -131,18 +196,21 @@ class Config(BaseModel):
         if not config_path.exists():
             raise FileNotFoundError(f"Configuration file does not exist: {config_path}")
 
+        _load_env_files(config_path)
+
         with open(config_path, encoding="utf-8") as f:
             data = yaml.safe_load(f)
 
         if not data:
             raise ValueError("Configuration file is empty")
 
-        # Parse LLM configuration
-        if "api_key" not in data:
-            raise ValueError("Configuration file missing required field: api_key")
+        data = _expand_env_vars(data)
 
-        if not data["api_key"] or data["api_key"] == "YOUR_API_KEY_HERE":
-            raise ValueError("Please configure a valid API Key")
+        # Parse LLM configuration
+        api_key = data.get("api_key") or os.environ.get("MINI_AGENT_API_KEY", "")
+
+        if _is_missing_secret(api_key, {"YOUR_API_KEY_HERE", "YOUR_MINIMAX_API_KEY_HERE"}):
+            raise ValueError("Please configure a valid API key in config.yaml or MINI_AGENT_API_KEY in .env")
 
         # Parse retry configuration
         retry_data = data.get("retry", {})
@@ -155,10 +223,10 @@ class Config(BaseModel):
         )
 
         llm_config = LLMConfig(
-            api_key=data["api_key"],
-            api_base=data.get("api_base", "https://api.minimax.io"),
-            model=data.get("model", "MiniMax-M2.5"),
-            provider=data.get("provider", "anthropic"),
+            api_key=api_key,
+            api_base=data.get("api_base") or os.environ.get("MINI_AGENT_API_BASE", "https://api.minimax.io"),
+            model=data.get("model") or os.environ.get("MINI_AGENT_MODEL", "MiniMax-M2.5"),
+            provider=data.get("provider") or os.environ.get("MINI_AGENT_PROVIDER", "anthropic"),
             retry=retry_config,
         )
 
@@ -182,15 +250,15 @@ class Config(BaseModel):
 
         web_search_data = tools_data.get("web_search", {})
         web_search_config = WebSearchConfig(
-            api_key=web_search_data.get("api_key", ""),
+            api_key=web_search_data.get("api_key") or os.environ.get("TAVILY_API_KEY", ""),
             endpoint=web_search_data.get("endpoint", "https://api.tavily.com/search"),
         )
 
         jira_data = tools_data.get("jira", {})
         jira_config = JiraConfig(
-            base_url=jira_data.get("base_url", ""),
-            email=jira_data.get("email", ""),
-            api_token=jira_data.get("api_token", ""),
+            base_url=jira_data.get("base_url") or os.environ.get("JIRA_BASE_URL", ""),
+            email=jira_data.get("email") or os.environ.get("JIRA_EMAIL", ""),
+            api_token=jira_data.get("api_token") or os.environ.get("JIRA_API_TOKEN", ""),
         )
 
         vector_memory_data = tools_data.get("vector_memory", {})
