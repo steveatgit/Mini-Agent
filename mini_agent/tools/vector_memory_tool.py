@@ -1,15 +1,6 @@
-"""Workspace-aware semantic memory tools.
+"""Workspace-aware semantic memory tools backed by Chroma."""
 
-This module intentionally uses a small local vector store so the feature works
-without heavyweight runtime dependencies. The embedding is hashing-based, which
-is suitable for demos and tests; production deployments can replace the store or
-embedding provider behind the same Tool interface.
-"""
-
-import hashlib
-import json
-import math
-import re
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -19,51 +10,67 @@ from .base import Tool, ToolResult
 from .memory_path import get_workspace_id
 
 
-class HashingEmbeddingProvider:
-    """Deterministic lightweight embedding provider."""
+class SentenceTransformerEmbeddingProvider:
+    """Embedding provider using a local sentence-transformers model."""
 
-    def __init__(self, dimensions: int = 256):
-        self.dimensions = dimensions
+    def __init__(self, model_path: str):
+        self.model_path = str(Path(model_path).expanduser())
+        self.model = None
 
     def embed(self, text: str) -> list[float]:
-        vector = [0.0] * self.dimensions
-        tokens = re.findall(r"[\w\u4e00-\u9fff]+", text.lower())
-        for token in tokens:
-            digest = hashlib.sha256(token.encode("utf-8")).digest()
-            index = int.from_bytes(digest[:4], "big") % self.dimensions
-            sign = 1.0 if digest[4] % 2 == 0 else -1.0
-            vector[index] += sign
+        if self.model is None:
+            try:
+                from sentence_transformers import SentenceTransformer
+            except ImportError as exc:
+                raise RuntimeError(
+                    "Vector memory requires sentence-transformers. "
+                    "Install project dependencies with `uv sync` or reinstall mini-agent."
+                ) from exc
+            self.model = SentenceTransformer(self.model_path)
 
-        norm = math.sqrt(sum(value * value for value in vector))
-        if norm == 0:
-            return vector
-        return [value / norm for value in vector]
+        embedding = self.model.encode(text, normalize_embeddings=True)
+        return [float(value) for value in embedding.tolist()]
 
 
-class LocalVectorMemoryStore:
-    """JSON-backed vector store with workspace metadata filtering."""
+class ChromaVectorMemoryStore:
+    """Chroma-backed vector store with workspace metadata filtering."""
 
     def __init__(self, persist_dir: str, collection_name: str = "mini_agent_memory"):
+        os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
+        os.environ.setdefault("CHROMA_TELEMETRY", "False")
+        try:
+            import chromadb
+            from chromadb.config import Settings
+            from chromadb.telemetry.product.posthog import Posthog
+        except ImportError as exc:
+            raise RuntimeError(
+                "Vector memory requires chromadb. Install project dependencies with `uv sync` or reinstall mini-agent."
+            ) from exc
+
+        Posthog._direct_capture = lambda _self, _event: None
         self.persist_dir = Path(persist_dir).expanduser()
         self.persist_dir.mkdir(parents=True, exist_ok=True)
-        self.store_file = self.persist_dir / f"{collection_name}.json"
+        self.client = chromadb.PersistentClient(
+            path=str(self.persist_dir),
+            settings=Settings(anonymized_telemetry=False),
+        )
+        self.collection = self.client.get_or_create_collection(
+            name=collection_name,
+            metadata={"hnsw:space": "cosine"},
+        )
 
-    def _load(self) -> list[dict[str, Any]]:
-        if not self.store_file.exists():
-            return []
-        try:
-            data = json.loads(self.store_file.read_text(encoding="utf-8"))
-            return data if isinstance(data, list) else []
-        except Exception:
-            return []
-
-    def _save(self, records: list[dict[str, Any]]) -> None:
-        self.store_file.write_text(json.dumps(records, indent=2, ensure_ascii=False), encoding="utf-8")
-
-    def add(self, record: dict[str, Any]) -> None:
-        records = self._load()
-        records.append(record)
-        self._save(records)
+    def add(self, record: dict[str, Any], embedding: list[float]) -> None:
+        metadata = {
+            "workspace_id": record["workspace_id"],
+            "timestamp": record["timestamp"],
+            "category": record["category"],
+        }
+        self.collection.add(
+            ids=[record["id"]],
+            documents=[record["content"]],
+            embeddings=[embedding],
+            metadatas=[metadata],
+        )
 
     def query(
         self,
@@ -72,38 +79,54 @@ class LocalVectorMemoryStore:
         top_k: int,
         category: str | None = None,
     ) -> list[dict[str, Any]]:
-        candidates = []
-        for record in self._load():
-            if record.get("workspace_id") != workspace_id:
-                continue
-            if category and record.get("category") != category:
-                continue
-            score = cosine_similarity(query_embedding, record.get("embedding", []))
-            candidates.append((score, record))
+        where: dict[str, Any]
+        if category:
+            where = {"$and": [{"workspace_id": workspace_id}, {"category": category}]}
+        else:
+            where = {"workspace_id": workspace_id}
 
-        candidates.sort(key=lambda item: item[0], reverse=True)
-        return [
-            {
-                **record,
-                "score": round(score, 4),
-            }
-            for score, record in candidates[: max(1, top_k)]
-        ]
+        data = self.collection.query(
+            query_embeddings=[query_embedding],
+            n_results=max(1, top_k),
+            where=where,
+            include=["documents", "metadatas", "distances"],
+        )
 
+        ids = data.get("ids", [[]])[0]
+        documents = data.get("documents", [[]])[0]
+        metadatas = data.get("metadatas", [[]])[0]
+        distances = data.get("distances", [[]])[0]
 
-def cosine_similarity(left: list[float], right: list[float]) -> float:
-    if not left or not right or len(left) != len(right):
-        return 0.0
-    return sum(a * b for a, b in zip(left, right))
+        results = []
+        for item_id, document, metadata, distance in zip(ids, documents, metadatas, distances):
+            score = 1.0 - float(distance)
+            results.append(
+                {
+                    "id": item_id,
+                    "score": round(score, 4),
+                    "category": metadata.get("category", "general") if metadata else "general",
+                    "timestamp": metadata.get("timestamp", "unknown") if metadata else "unknown",
+                    "content": document or "",
+                }
+            )
+        return results
 
 
 class VectorRecordNoteTool(Tool):
     """Record a note into workspace-scoped semantic memory."""
 
-    def __init__(self, workspace_dir: str, persist_dir: str, collection_name: str = "mini_agent_memory"):
+    def __init__(
+        self,
+        workspace_dir: str,
+        persist_dir: str,
+        embedding_model: str,
+        collection_name: str = "mini_agent_memory",
+        store: ChromaVectorMemoryStore | None = None,
+        embedder: SentenceTransformerEmbeddingProvider | None = None,
+    ):
         self.workspace_id = get_workspace_id(workspace_dir)
-        self.store = LocalVectorMemoryStore(persist_dir=persist_dir, collection_name=collection_name)
-        self.embedder = HashingEmbeddingProvider()
+        self.store = store or ChromaVectorMemoryStore(persist_dir=persist_dir, collection_name=collection_name)
+        self.embedder = embedder or SentenceTransformerEmbeddingProvider(embedding_model)
 
     @property
     def name(self) -> str:
@@ -135,9 +158,8 @@ class VectorRecordNoteTool(Tool):
                 "timestamp": datetime.now().isoformat(),
                 "category": category,
                 "content": content,
-                "embedding": self.embedder.embed(content),
             }
-            self.store.add(record)
+            self.store.add(record, self.embedder.embed(content))
             return ToolResult(success=True, content=f"Recorded semantic note: {content} (category: {category})")
         except Exception as e:
             return ToolResult(success=False, content="", error=f"Failed to record semantic note: {e}")
@@ -150,12 +172,15 @@ class SemanticRecallTool(Tool):
         self,
         workspace_dir: str,
         persist_dir: str,
+        embedding_model: str,
         collection_name: str = "mini_agent_memory",
         default_top_k: int = 5,
+        store: ChromaVectorMemoryStore | None = None,
+        embedder: SentenceTransformerEmbeddingProvider | None = None,
     ):
         self.workspace_id = get_workspace_id(workspace_dir)
-        self.store = LocalVectorMemoryStore(persist_dir=persist_dir, collection_name=collection_name)
-        self.embedder = HashingEmbeddingProvider()
+        self.store = store or ChromaVectorMemoryStore(persist_dir=persist_dir, collection_name=collection_name)
+        self.embedder = embedder or SentenceTransformerEmbeddingProvider(embedding_model)
         self.default_top_k = default_top_k
 
     @property
@@ -206,20 +231,29 @@ class SemanticRecallTool(Tool):
 def create_vector_memory_tools(
     workspace_dir: str,
     persist_dir: str,
+    embedding_model: str,
     collection_name: str = "mini_agent_memory",
     top_k: int = 5,
 ) -> list[Tool]:
-    """Create vector memory tools for a workspace."""
+    """Create Chroma vector memory tools for a workspace."""
+    store = ChromaVectorMemoryStore(persist_dir=persist_dir, collection_name=collection_name)
+    embedder = SentenceTransformerEmbeddingProvider(embedding_model)
     return [
         VectorRecordNoteTool(
             workspace_dir=workspace_dir,
             persist_dir=persist_dir,
+            embedding_model=embedding_model,
             collection_name=collection_name,
+            store=store,
+            embedder=embedder,
         ),
         SemanticRecallTool(
             workspace_dir=workspace_dir,
             persist_dir=persist_dir,
+            embedding_model=embedding_model,
             collection_name=collection_name,
             default_top_k=top_k,
+            store=store,
+            embedder=embedder,
         ),
     ]

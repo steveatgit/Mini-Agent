@@ -130,7 +130,7 @@ class VectorMemoryConfig(BaseModel):
 
     persist_dir: str = "~/.mini-agent/vector_memory"
     collection_name: str = "mini_agent_memory"
-    embedding_model: str = "hashing"
+    embedding_model: str = "~/Documents/model/bge-base-zh"
     top_k: int = 5
 
 
@@ -265,7 +265,7 @@ class Config(BaseModel):
         vector_memory_config = VectorMemoryConfig(
             persist_dir=vector_memory_data.get("persist_dir", "~/.mini-agent/vector_memory"),
             collection_name=vector_memory_data.get("collection_name", "mini_agent_memory"),
-            embedding_model=vector_memory_data.get("embedding_model", "hashing"),
+            embedding_model=vector_memory_data.get("embedding_model", "~/Documents/model/bge-base-zh"),
             top_k=vector_memory_data.get("top_k", 5),
         )
 

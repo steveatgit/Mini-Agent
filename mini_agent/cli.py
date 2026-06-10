@@ -453,6 +453,7 @@ async def initialize_base_tools(config: Config):
             create_vector_memory_tools(
                 workspace_dir=config.agent.workspace_dir,
                 persist_dir=config.tools.vector_memory.persist_dir,
+                embedding_model=config.tools.vector_memory.embedding_model,
                 collection_name=config.tools.vector_memory.collection_name,
                 top_k=config.tools.vector_memory.top_k,
             )

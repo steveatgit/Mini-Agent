@@ -4,6 +4,7 @@ from mini_agent.config import Config
 
 
 def test_config_expands_env_file_values(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.delenv("MINI_AGENT_API_KEY", raising=False)
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
     monkeypatch.delenv("JIRA_API_TOKEN", raising=False)
@@ -46,7 +47,9 @@ tools:
 
 
 def test_config_rejects_unresolved_api_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.delenv("MINI_AGENT_API_KEY", raising=False)
+    monkeypatch.setattr("mini_agent.config._load_env_files", lambda config_path: None)
     config_path = Path(tmp_path) / "config.yaml"
     config_path.write_text('api_key: "${MINI_AGENT_API_KEY}"\n', encoding="utf-8")
 

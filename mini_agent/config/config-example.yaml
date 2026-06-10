@@ -67,7 +67,7 @@ tools:
   vector_memory:
     persist_dir: "~/.mini-agent/vector_memory"
     collection_name: "mini_agent_memory"
-    embedding_model: "hashing"
+    embedding_model: "~/Documents/model/bge-base-zh"
     top_k: 5
   
   # MCP Tools
