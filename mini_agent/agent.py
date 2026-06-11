@@ -10,7 +10,7 @@ import tiktoken
 
 from .llm import LLMClient
 from .logger import AgentLogger
-from .schema import Message
+from .schema import FunctionCall, Message, ToolCall
 from .tools.base import Tool, ToolResult
 from .utils import calculate_display_width
 
@@ -119,6 +119,111 @@ class Agent:
         if removed_count > 0:
             self.messages = self.messages[:last_assistant_idx]
             print(f"{Colors.DIM}   Cleaned up {removed_count} incomplete message(s){Colors.RESET}")
+
+    def _latest_user_message_for_auto_route(self) -> str | None:
+        """Return the latest user message if no assistant/tool work has started for it."""
+        latest_user_idx = -1
+        for i in range(len(self.messages) - 1, -1, -1):
+            if self.messages[i].role == "user":
+                latest_user_idx = i
+                break
+
+        if latest_user_idx == -1:
+            return None
+
+        if any(msg.role in {"assistant", "tool"} for msg in self.messages[latest_user_idx + 1 :]):
+            return None
+
+        content = self.messages[latest_user_idx].content
+        return content if isinstance(content, str) else str(content)
+
+    def _should_auto_route_event_trace(self, user_message: str | None) -> bool:
+        """Detect event chronology requests that should start with event_trace."""
+        if not user_message or "event_trace" not in self.tools:
+            return False
+
+        text = user_message.lower()
+        triggers = [
+            "事件脉络",
+            "时间脉络",
+            "时间线",
+            "证据链",
+            "引用年表",
+            "梳理事件",
+            "还原事件",
+            "timeline",
+            "chronology",
+            "event trace",
+            "evidence chain",
+            "cited chronology",
+            "incident timeline",
+            "incident investigation",
+        ]
+        return any(trigger in text for trigger in triggers)
+
+    async def _maybe_auto_run_event_trace(self) -> bool:
+        """Run event_trace before the LLM when the user clearly asks for a timeline."""
+        user_message = self._latest_user_message_for_auto_route()
+        if not self._should_auto_route_event_trace(user_message):
+            return False
+
+        tool = self.tools["event_trace"]
+        arguments = {"topic": user_message, "research_depth": "quick"}
+        tool_call = ToolCall(
+            id="auto-event-trace",
+            type="function",
+            function=FunctionCall(name="event_trace", arguments=arguments),
+        )
+
+        print(f"\n{Colors.BRIGHT_YELLOW}🔧 Auto Tool Call:{Colors.RESET} {Colors.BOLD}{Colors.CYAN}event_trace{Colors.RESET}")
+        print(f"{Colors.DIM}   Reason: event timeline request detected{Colors.RESET}")
+
+        self.messages.append(
+            Message(
+                role="assistant",
+                content="",
+                tool_calls=[tool_call],
+            )
+        )
+
+        try:
+            result = await tool.execute(**arguments)
+        except Exception as e:
+            import traceback
+
+            error_detail = f"{type(e).__name__}: {str(e)}"
+            error_trace = traceback.format_exc()
+            result = ToolResult(
+                success=False,
+                content="",
+                error=f"Tool execution failed: {error_detail}\n\nTraceback:\n{error_trace}",
+            )
+
+        self.logger.log_tool_result(
+            tool_name="event_trace",
+            arguments=arguments,
+            result_success=result.success,
+            result_content=result.content if result.success else None,
+            result_error=result.error if not result.success else None,
+        )
+
+        if result.success:
+            result_text = result.content
+            if len(result_text) > 300:
+                result_text = result_text[:300] + f"{Colors.DIM}...{Colors.RESET}"
+            print(f"{Colors.BRIGHT_GREEN}✓ Result:{Colors.RESET} {result_text}")
+        else:
+            print(f"{Colors.BRIGHT_RED}✗ Error:{Colors.RESET} {Colors.RED}{result.error}{Colors.RESET}")
+
+        self.messages.append(
+            Message(
+                role="tool",
+                content=result.content if result.success else f"Error: {result.error}",
+                tool_call_id=tool_call.id,
+                name="event_trace",
+            )
+        )
+        return True
 
     def _estimate_tokens(self) -> int:
         """Accurately calculate token count for message history using tiktoken
@@ -336,6 +441,8 @@ Requirements:
         # Start new run, initialize log file
         self.logger.start_new_run()
         print(f"{Colors.DIM}📝 Log file: {self.logger.get_log_file_path()}{Colors.RESET}")
+
+        await self._maybe_auto_run_event_trace()
 
         step = 0
         run_start_time = perf_counter()

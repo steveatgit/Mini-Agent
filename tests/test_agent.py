@@ -9,7 +9,59 @@ import pytest
 from mini_agent import LLMClient
 from mini_agent.agent import Agent
 from mini_agent.config import Config
-from mini_agent.tools import BashTool, EditTool, ReadTool, WriteTool
+from mini_agent.schema import LLMResponse, Message
+from mini_agent.tools import BashTool, EditTool, ReadTool, Tool, ToolResult, WriteTool
+
+
+class FakeLLM:
+    def __init__(self):
+        self.messages: list[list[Message]] = []
+
+    async def generate(self, messages, tools=None):
+        self.messages.append(list(messages))
+        return LLMResponse(content="event trace complete", finish_reason="stop")
+
+
+class FakeEventTraceTool(Tool):
+    def __init__(self):
+        self.calls = []
+
+    @property
+    def name(self) -> str:
+        return "event_trace"
+
+    @property
+    def description(self) -> str:
+        return "fake event trace"
+
+    @property
+    def parameters(self) -> dict:
+        return {"type": "object", "properties": {"topic": {"type": "string"}}, "required": ["topic"]}
+
+    async def execute(self, **kwargs) -> ToolResult:
+        self.calls.append(kwargs)
+        return ToolResult(success=True, content='{"report_path": "trace.md"}')
+
+
+@pytest.mark.asyncio
+async def test_agent_auto_routes_event_timeline_to_event_trace(tmp_path):
+    llm = FakeLLM()
+    event_trace = FakeEventTraceTool()
+    agent = Agent(
+        llm_client=llm,
+        system_prompt="system",
+        tools=[event_trace],
+        max_steps=2,
+        workspace_dir=str(tmp_path),
+    )
+
+    agent.add_user_message("俄乌战争事件脉络")
+    result = await agent.run()
+
+    assert result == "event trace complete"
+    assert event_trace.calls == [{"topic": "俄乌战争事件脉络", "research_depth": "quick"}]
+    assert len(llm.messages) == 1
+    assert any(msg.role == "tool" and msg.name == "event_trace" for msg in llm.messages[0])
 
 
 @pytest.mark.asyncio

@@ -12,6 +12,8 @@ Examples:
 
 import argparse
 import asyncio
+import json
+import os
 import platform
 import subprocess
 import sys
@@ -30,9 +32,23 @@ from prompt_toolkit.styles import Style
 from mini_agent import LLMClient
 from mini_agent.agent import Agent
 from mini_agent.config import Config
+from mini_agent.event_trace import (
+    CitationJudge,
+    DefaultPageFetcher,
+    EventTraceAgent,
+    EventTraceEvalCase,
+    EventTraceEvalHarness,
+    EventTraceMemory,
+    EventTraceRunRecorder,
+    LLMEvidenceExtractor,
+    ResponsibleTaskPlanner,
+    Source,
+)
+from mini_agent.event_trace_runner import execute_event_trace, resolve_workspace_output_path, source_from_arg
 from mini_agent.schema import LLMProvider
 from mini_agent.tools.base import Tool
 from mini_agent.tools.bash_tool import BashKillTool, BashOutputTool, BashTool
+from mini_agent.tools.event_trace_tool import EventTraceTool
 from mini_agent.tools.file_tools import EditTool, ReadTool, WriteTool
 from mini_agent.tools.mcp_loader import cleanup_mcp_connections, load_mcp_tools_async, set_mcp_timeout_config
 from mini_agent.tools.jira_reader_tool import JiraReaderTool
@@ -335,6 +351,94 @@ Examples:
         help="Log filename to read (optional, shows directory if omitted)",
     )
 
+    trace_parser = subparsers.add_parser("trace", help="Run an event trace workflow")
+    trace_parser.add_argument("topic", help="Event topic to trace")
+    trace_parser.add_argument(
+        "--source",
+        action="append",
+        default=[],
+        help="Seed source URL, file:// URL, or local text/HTML path. Can be provided multiple times.",
+    )
+    trace_parser.add_argument(
+        "--output",
+        "-o",
+        default=None,
+        help="Write the Markdown report to this file",
+    )
+    trace_parser.add_argument(
+        "--json",
+        dest="json_output",
+        default=None,
+        help="Write the full workflow state as JSON to this file",
+    )
+    trace_parser.add_argument(
+        "--max-sources",
+        type=int,
+        default=8,
+        help="Maximum candidate sources to use",
+    )
+    trace_parser.add_argument(
+        "--research-depth",
+        choices=["quick", "deep"],
+        default="quick",
+        help="Research depth: quick timeline or deep evidence report",
+    )
+    trace_parser.add_argument(
+        "--time-range",
+        default=None,
+        help="Optional time range to scope the event trace",
+    )
+    trace_parser.add_argument(
+        "--focus",
+        action="append",
+        default=[],
+        help="Optional research focus area. Can be provided multiple times.",
+    )
+    trace_parser.add_argument(
+        "--no-memory",
+        action="store_true",
+        help="Disable event evidence memory for this run",
+    )
+    trace_parser.add_argument(
+        "--llm-extract",
+        action="store_true",
+        help="Use the configured LLM for evidence extraction instead of the deterministic fallback",
+    )
+    trace_parser.add_argument(
+        "--llm-plan",
+        action="store_true",
+        help="Use the configured LLM to enrich the task plan, with rule-based fallback",
+    )
+    trace_parser.add_argument(
+        "--llm-judge",
+        action="store_true",
+        help="Use the configured LLM to judge whether quotes support claims, with rule-based fallback",
+    )
+
+    trace_eval_parser = subparsers.add_parser("trace-eval", help="Run a closed-set event trace eval case")
+    trace_eval_parser.add_argument("case_file", help="Path to eval case JSON")
+    trace_eval_parser.add_argument(
+        "--output",
+        "-o",
+        default=None,
+        help="Write eval metrics JSON to this workspace-relative path",
+    )
+    trace_eval_parser.add_argument(
+        "--llm-extract",
+        action="store_true",
+        help="Use the configured LLM for evidence extraction",
+    )
+    trace_eval_parser.add_argument(
+        "--llm-plan",
+        action="store_true",
+        help="Use the configured LLM to enrich the task plan",
+    )
+    trace_eval_parser.add_argument(
+        "--llm-judge",
+        action="store_true",
+        help="Use the configured LLM for citation judging",
+    )
+
     return parser.parse_args()
 
 
@@ -498,6 +602,10 @@ def add_workspace_tools(tools: List[Tool], config: Config, workspace_dir: Path):
             )
         )
         print(f"{Colors.GREEN}✅ Loaded vector memory tools (Chroma){Colors.RESET}")
+
+    if config.tools.enable_event_trace:
+        tools.append(EventTraceTool(workspace_dir=str(workspace_dir), config=config))
+        print(f"{Colors.GREEN}✅ Loaded event trace tool (workspace: {workspace_dir}){Colors.RESET}")
 
 
 async def _quiet_cleanup():
@@ -874,6 +982,147 @@ async def run_agent(workspace_dir: Path, task: str = None):
     await _quiet_cleanup()
 
 
+def _load_config_optional() -> Config | None:
+    config_path = Config.get_default_config_path()
+    if not config_path.exists():
+        return None
+    try:
+        return Config.from_yaml(config_path)
+    except Exception as exc:
+        print(f"{Colors.YELLOW}⚠️  Could not load config for event trace: {exc}{Colors.RESET}")
+        return None
+
+
+def _source_from_arg(value: str) -> Source:
+    return source_from_arg(value)
+
+
+def _resolve_workspace_output_path(workspace_dir: Path, value: str) -> Path:
+    """Resolve an output path and require it to stay inside the workspace."""
+    return resolve_workspace_output_path(workspace_dir, value)
+
+
+def _create_trace_llm_client(config: Config | None, feature_name: str) -> LLMClient | None:
+    if config is None:
+        print(f"{Colors.YELLOW}⚠️  {feature_name} requested but no config was loaded; using rule-based fallback{Colors.RESET}")
+        return None
+    provider = LLMProvider.ANTHROPIC if config.llm.provider.lower() == "anthropic" else LLMProvider.OPENAI
+    return LLMClient(
+        api_key=config.llm.api_key,
+        provider=provider,
+        api_base=config.llm.api_base,
+        model=config.llm.model,
+    )
+
+
+def _create_trace_llm_extractor(config: Config | None) -> LLMEvidenceExtractor | None:
+    llm_client = _create_trace_llm_client(config, "--llm-extract")
+    return LLMEvidenceExtractor(llm_client) if llm_client else None
+
+
+def _load_trace_eval_case(case_file: str) -> EventTraceEvalCase:
+    path = Path(case_file).expanduser()
+    data = json.loads(path.read_text(encoding="utf-8"))
+    sources = []
+    for item in data.get("sources", []):
+        source = Path(str(item)).expanduser()
+        if not source.is_absolute() and not str(item).startswith(("http://", "https://", "file://")):
+            source = path.parent / source
+        sources.append(str(source))
+    return EventTraceEvalCase(
+        topic=str(data["topic"]),
+        sources=sources,
+        required_events=[str(item) for item in data.get("required_events", [])],
+        expected_citations=[str(item) for item in data.get("expected_citations", [])],
+    )
+
+
+async def run_event_trace(args: argparse.Namespace, workspace_dir: Path) -> None:
+    """Run the event trace LangGraph workflow."""
+
+    config = _load_config_optional()
+
+    if not args.source and not (config.tools.web_search.api_key if config else os.environ.get("TAVILY_API_KEY", "")):
+        print(f"{Colors.YELLOW}⚠️  No --source provided and no TAVILY_API_KEY configured. The report may be empty.{Colors.RESET}")
+
+    print(f"{Colors.BRIGHT_CYAN}Running event trace workflow...{Colors.RESET}")
+    print(f"{Colors.DIM}Topic: {args.topic}{Colors.RESET}")
+    result, state = await execute_event_trace(
+        topic=args.topic,
+        workspace_dir=workspace_dir,
+        config=config,
+        sources=args.source,
+        max_sources=args.max_sources,
+        research_depth=args.research_depth,
+        time_range=args.time_range,
+        focus=args.focus,
+        use_memory=not args.no_memory,
+        llm_plan=args.llm_plan,
+        llm_extract=args.llm_extract,
+        llm_judge=args.llm_judge,
+        output=args.output,
+        json_output=args.json_output,
+    )
+    report = state.get("report", "")
+    print(f"{Colors.DIM}Run directory: {result.run_dir}{Colors.RESET}")
+
+    if args.output:
+        print(f"{Colors.GREEN}✅ Wrote report: {result.output_path}{Colors.RESET}")
+    else:
+        print()
+        print(report)
+
+    if args.json_output:
+        json_path = _resolve_workspace_output_path(workspace_dir, args.json_output)
+        print(f"{Colors.GREEN}✅ Wrote workflow state: {json_path}{Colors.RESET}")
+
+
+async def run_event_trace_eval(args: argparse.Namespace, workspace_dir: Path) -> None:
+    """Run a closed-set event trace evaluation case."""
+
+    config = _load_config_optional()
+    case = _load_trace_eval_case(args.case_file)
+    if not case.sources:
+        raise ValueError("Eval case must include at least one source")
+
+    memory = EventTraceMemory(workspace_dir / ".event_trace_eval_memory.jsonl")
+    extractor = _create_trace_llm_extractor(config) if args.llm_extract else None
+    planner_llm_client = _create_trace_llm_client(config, "--llm-plan") if args.llm_plan else None
+    judge_llm_client = _create_trace_llm_client(config, "--llm-judge") if args.llm_judge else None
+    task_planner = ResponsibleTaskPlanner(memory=memory, llm_client=planner_llm_client)
+    citation_judge = CitationJudge(llm_client=judge_llm_client)
+
+    run_id = datetime.utcnow().strftime("eval-%Y%m%dT%H%M%SZ")
+    run_recorder = EventTraceRunRecorder(workspace_dir / ".event_trace" / "evals" / run_id, run_id=run_id)
+    agent = EventTraceAgent(
+        topic=case.topic,
+        search_provider=lambda _query, _max_results: asyncio.sleep(0, result=[]),
+        fetch_provider=DefaultPageFetcher(cache_dir=workspace_dir / ".event_trace" / "cache"),
+        evidence_extractor=extractor,
+        task_planner=task_planner,
+        citation_judge=citation_judge,
+        run_recorder=run_recorder,
+        memory=memory,
+        initial_sources=[_source_from_arg(source) for source in case.sources],
+        max_sources=len(case.sources),
+    )
+    state = await agent.run()
+    result = EventTraceEvalHarness().evaluate_state(state, case)
+    payload = {
+        "case": case.__dict__,
+        "metrics": result.to_dict(),
+        "run_dir": str(run_recorder.run_dir),
+    }
+
+    if args.output:
+        output_path = _resolve_workspace_output_path(workspace_dir, args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"{Colors.GREEN}✅ Wrote eval result: {output_path}{Colors.RESET}")
+    else:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
 def main():
     """Main entry point for CLI"""
     # Parse command line arguments
@@ -885,6 +1134,24 @@ def main():
             read_log_file(args.filename)
         else:
             show_log_directory(open_file_manager=True)
+        return
+
+    if args.command == "trace":
+        if args.workspace:
+            workspace_dir = Path(args.workspace).expanduser().absolute()
+        else:
+            workspace_dir = Path.cwd()
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        asyncio.run(run_event_trace(args, workspace_dir))
+        return
+
+    if args.command == "trace-eval":
+        if args.workspace:
+            workspace_dir = Path(args.workspace).expanduser().absolute()
+        else:
+            workspace_dir = Path.cwd()
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        asyncio.run(run_event_trace_eval(args, workspace_dir))
         return
 
     # Determine workspace directory

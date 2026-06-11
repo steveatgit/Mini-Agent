@@ -50,6 +50,12 @@ Skills are loaded dynamically using **Progressive Disclosure**:
 - Use appropriate error handling
 - Prefer specialized tools over raw commands when available
 
+### Event Tracing
+- When the user asks to reconstruct an event timeline, investigate an incident, compare sources, build an evidence chain, or produce a cited chronology, prefer the `event_trace` tool over ad hoc web search and summarization.
+- Use `research_depth="deep"` when the user asks for deep research, evidence chains, disputes, multiple viewpoints, source quality, or a research-style report.
+- Treat `supported`, `single_source`, `conflicted`, and `unsupported` statuses as evidence strength labels; do not present single-source or conflicted claims as settled facts.
+- If the user needs the full evidence chain after `event_trace` returns, read the generated report path instead of asking the workflow to return all intermediate state.
+
 ### Python Environment Management
 **CRITICAL - Use `uv` for all Python operations. Before executing Python code:**
 1. Check/create venv: `if [ ! -d .venv ]; then uv venv; fi`

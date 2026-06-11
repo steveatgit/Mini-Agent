@@ -63,3 +63,5 @@ docs/assets/preview.html
 CLAUDE.md
 
 .agent_memory.json
+.event_trace/
+.event_trace_memory.jsonl

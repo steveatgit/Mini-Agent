@@ -54,6 +54,12 @@ tools:
   web_search:
     api_key: "${TAVILY_API_KEY}"
     endpoint: "https://api.tavily.com/search"
+    timeout: 20.0
+
+  # Event trace workflow tool
+  # Lets the main agent build cited event timelines and evidence reports.
+  # Uses web_search.api_key / endpoint for open-web search when no sources are provided.
+  enable_event_trace: false
 
   # Jira reader tool
   enable_jira_reader: false

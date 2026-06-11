@@ -115,6 +115,7 @@ class WebSearchConfig(BaseModel):
 
     api_key: str = ""
     endpoint: str = "https://api.tavily.com/search"
+    timeout: float = 20.0
 
 
 class JiraConfig(BaseModel):
@@ -154,6 +155,7 @@ class ToolsConfig(BaseModel):
     # External tools
     enable_web_search: bool = False
     web_search: WebSearchConfig = Field(default_factory=WebSearchConfig)
+    enable_event_trace: bool = False
     enable_jira_reader: bool = False
     jira: JiraConfig = Field(default_factory=JiraConfig)
 
@@ -252,6 +254,7 @@ class Config(BaseModel):
         web_search_config = WebSearchConfig(
             api_key=web_search_data.get("api_key") or os.environ.get("TAVILY_API_KEY", ""),
             endpoint=web_search_data.get("endpoint", "https://api.tavily.com/search"),
+            timeout=web_search_data.get("timeout", 20.0),
         )
 
         jira_data = tools_data.get("jira", {})
@@ -280,6 +283,7 @@ class Config(BaseModel):
             mcp=mcp_config,
             enable_web_search=tools_data.get("enable_web_search", False),
             web_search=web_search_config,
+            enable_event_trace=tools_data.get("enable_event_trace", False),
             enable_jira_reader=tools_data.get("enable_jira_reader", False),
             jira=jira_config,
             enable_vector_memory=tools_data.get("enable_vector_memory", False),
