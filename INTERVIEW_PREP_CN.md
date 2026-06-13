@@ -69,6 +69,7 @@
   <a href="#2-整体架构">2. 整体架构</a>
   <a href="#3-核心执行链路">3. 核心执行链路</a>
   <a href="#31-runtime-和-harness-的理解">3.1 Runtime 和 Harness</a>
+  <a href="#32-mini-agent-runtime-与-langgraph-区别">3.2 Runtime vs LangGraph</a>
   <a href="#4-项目亮点">4. 项目亮点</a>
   <a class="sub" href="#41-统一-llm-协议适配">4.1 LLM 协议适配</a>
   <a class="sub" href="#42-支持-thinkingreasoning-的多轮保留">4.2 Thinking 保留</a>
@@ -92,7 +93,9 @@
   <a class="sub2" href="#621-当前记忆系统的边界">6.2.1 当前边界</a>
   <a class="sub2" href="#622-方案一按-workspace-隔离记忆">6.2.2 Workspace 隔离</a>
   <a class="sub2" href="#623-方案二接向量库做语义检索">6.2.3 语义检索</a>
-  <a class="sub2" href="#624-组合改造后的记忆架构">6.2.4 记忆架构</a>
+  <a class="sub2" href="#624-升级为-l1l2l3-三层-memory-架构">6.2.4 三层 Memory</a>
+  <a class="sub2" href="#625-l1l2l3-分别用什么结构存储">6.2.5 存储结构</a>
+  <a class="sub2" href="#626-组合改造后的记忆架构">6.2.6 记忆架构</a>
   <a class="sub" href="#63-增强安全边界">6.3 安全边界</a>
   <a class="sub2" href="#631-危险命令确认的实现思路">6.3.1 危险命令确认</a>
   <a class="sub" href="#64-增加真实业务场景">6.4 业务场景</a>
@@ -150,8 +153,8 @@ Agent Runtime
 架构图里 Agent Runtime 的几项能力，在代码里不是独立模块，而是集中落在 `mini_agent/agent.py` 的 `Agent` 状态机里：
 
 - **多轮执行循环**：`run()` 里用 `while step < self.max_steps` 控制执行轮次。每一轮先把当前 `messages` 和工具列表传给 LLM；如果 LLM 返回 `tool_calls`，Runtime 按 tool name 找到本地工具并执行，再把工具结果写回历史；如果没有 `tool_calls`，就把本轮 assistant 文本作为最终结果返回。`max_steps` 是兜底保护，避免模型反复调用工具导致无限循环。
-- **消息历史管理**：`Agent` 初始化时把 system prompt 放进 `self.messages`，用户输入通过 `add_user_message()` 追加。每次 LLM 响应都会追加一条 `assistant` message，里面保留普通文本、`thinking` 和 `tool_calls`；每个工具执行结果会追加成 `tool` message，并带上 `tool_call_id` 和工具名。这样下一轮模型能看到完整的“用户目标 -> 模型决策 -> 工具结果”链路。
-- **token 估算与摘要**：每轮调用 LLM 前会执行 `_summarize_messages()`。它同时参考本地 `_estimate_tokens()` 的估算值和 Provider 返回的 `response.usage.total_tokens`。本地估算优先用 `tiktoken` 的 `cl100k_base` 编码统计消息正文、thinking、tool calls 和每条消息的额外开销；如果超过 `token_limit`，就按用户轮次保留 system 和 user message，把中间 assistant/tool 执行过程压缩成 `[Assistant Execution Summary]`，从而保留关键结果并降低上下文长度。
+- **消息历史管理**：`Agent` 初始化时把 system prompt 放进 `self.messages`。这里的 system prompt 指的是 Agent 初始化时放在 `messages[0]` 的系统级指令，用来规定 Agent 的身份、能力、工具使用方式、Skills 加载方式、工作规范等。用户输入通过 `add_user_message()` 追加。每次 LLM 响应都会追加一条 `assistant` message，里面保留普通文本、`thinking` 和 `tool_calls`；每个工具执行结果会追加成 `tool` message，并带上 `tool_call_id` 和工具名。这样下一轮模型能看到完整的“用户目标 -> 模型决策 -> 工具结果”链路。
+- **token 估算与摘要**：每轮调用 LLM 前会执行 `_summarize_messages()`。它同时参考本地 `_estimate_tokens()` 的估算值和 Provider 返回的 `response.usage.total_tokens`。本地估算优先用 `tiktoken` 的 `cl100k_base` 编码统计消息正文、thinking、tool calls 和每条消息的额外开销；只有当本地估算或 API reported tokens 超过 `token_limit` 时，才会触发摘要。触发后会按用户轮次保留 system 和 user message，并调用当前配置的 LLM 把中间 assistant/tool 执行过程压缩成 `[Assistant Execution Summary]`；如果摘要调用失败，则退回规则拼接的简单摘要。短任务或上下文未超阈值时不会额外调用模型生成摘要。
 - **取消与清理**：CLI 里监听 Esc，把 `asyncio.Event` 设置到 `agent.cancel_event`。`run()` 会在每轮开始、工具执行前、每个工具执行后检查 `_check_cancelled()`。一旦取消，`_cleanup_incomplete_messages()` 会删除最后一条 assistant message 以及它后面的部分 tool result，只保留已经完成的历史，避免下一轮看到半截 tool call / tool result，最后返回 `Task cancelled by user.`。
 
 源码对应关系：
@@ -339,6 +342,138 @@ Harness:
 
 > Runtime 是 Agent 的执行系统，负责真实任务中的多轮推理和工具调度；Harness 是包在 Runtime 外面的测试或评测驱动，用来构造输入、隔离环境、收集输出和验证行为。简单说，Runtime 负责跑任务，Harness 负责驱动和检查 Runtime。
 
+## 3.2 Mini-Agent Runtime 与 LangGraph 区别
+
+面试中如果被问到“这个项目的 runtime 机制和 LangGraph 有什么区别”，核心回答是：
+
+> Mini-Agent 的主 Runtime 是一个手写的线性 Agent loop，更像轻量级 ReAct / tool-calling harness；LangGraph 是显式状态图运行时，用节点、边和状态来编排复杂 Agent 工作流。Mini-Agent 更轻、更直接；LangGraph 更适合需要显式流程、分支、持久化、恢复和人审的复杂任务。
+
+### Mini-Agent 主 Runtime
+
+Mini-Agent 的主执行逻辑集中在 `mini_agent/agent.py` 的 `Agent.run()`。
+
+它的状态主要是 `self.messages`，也就是一条完整的对话和工具调用历史：
+
+```text
+system prompt
+  -> user message
+  -> assistant message with tool_calls
+  -> tool result message
+  -> assistant message with next tool_calls
+  -> ...
+  -> final assistant message
+```
+
+这里的 `system prompt` 指的是 Agent 初始化时放在 `messages[0]` 的系统级指令，用来规定 Agent 的身份、能力、工具使用方式、Skills 加载方式、工作规范等。
+
+主循环大致是：
+
+```text
+while step < max_steps:
+  1. 把 messages 和 tools 发给 LLM
+  2. LLM 返回 content / thinking / tool_calls
+  3. 如果没有 tool_calls，Runtime 认为任务结束
+  4. 如果有 tool_calls，按 tool name 找到本地工具并执行
+  5. 把 ToolResult 追加成 tool message
+  6. 进入下一轮
+```
+
+这个 Runtime 的控制流是“模型驱动”的：模型决定下一步要不要调用工具、调用哪个工具、什么时候停止。Runtime 负责把这个过程可靠地跑完，包括工具分发、错误捕获、日志、上下文摘要、取消清理和最大步数保护。
+
+可以这样讲：
+
+> Mini-Agent 的主 Runtime 没有把任务拆成固定 DAG，而是维护一个 messages 状态，并围绕 LLM tool call 做多轮闭环。它适合开放式 CLI Agent，因为用户任务类型不固定，下一步动作通常由模型根据上下文动态决定。
+
+### LangGraph Runtime
+
+LangGraph 的抽象更偏“显式工作流编排”。
+
+它通常会定义：
+
+- `State`：图的全局状态，例如 messages、query、evidence、timeline、report。
+- `Node`：一个处理步骤，输入 state，返回 state 的增量更新。
+- `Edge`：节点之间的流转关系。
+- `Conditional Edge`：根据 state 决定下一个节点。
+- `Checkpointer / Store`：保存线程状态或长期记忆，用于恢复、人审和持久化。
+
+典型结构是：
+
+```text
+StateGraph(State)
+  -> add_node("planner", planner_node)
+  -> add_node("search", search_node)
+  -> add_node("validate", validate_node)
+  -> add_conditional_edges("validate", route_fn, ...)
+  -> compile()
+  -> invoke / ainvoke
+```
+
+LangGraph 的控制流是“图结构驱动”的：节点和边定义了系统允许怎样走，模型可以参与节点内部决策，但整体流程由图约束。
+
+### 对比表
+
+| 维度 | Mini-Agent 主 Runtime | LangGraph |
+|---|---|---|
+| 核心抽象 | `messages` + tool-calling loop | `StateGraph` + nodes + edges |
+| 控制流 | 隐式，由 LLM 的 `tool_calls` 决定 | 显式，由 graph edge / conditional edge 决定 |
+| 状态管理 | 主要维护消息历史 | 维护结构化 state |
+| 任务流程 | 开放式，多轮动态探索 | 固定或半固定工作流 |
+| 工具调用 | Runtime 统一执行所有 tool calls | 可放在 ToolNode 或任意 node 内 |
+| 分支逻辑 | 主要靠模型判断 | 用 conditional edges 明确定义 |
+| 持久化恢复 | 主 Agent 主要靠内存 messages、日志和记忆工具 | 原生支持 checkpointer、thread state、恢复、time travel |
+| 人工介入 | 需要自己实现 | LangGraph 更适合 human-in-the-loop |
+| 可观测性 | 自己写 logger | 可结合 LangSmith 看图路径和状态迁移 |
+| 适合场景 | 通用 CLI Agent、工程助手、轻量工具闭环 | 多阶段、可恢复、可审计的复杂 Agent workflow |
+
+### 本项目里的 LangGraph 用法
+
+这个项目不是完全不用 LangGraph。`mini_agent/event_trace.py` 里的 `EventTraceAgent` 就是一个更适合状态图的场景。
+
+事件脉络任务不是普通开放式对话，而是一个相对固定的研究流程：
+
+```text
+query_planner
+  -> source_search
+  -> page_fetch
+  -> evidence_extract
+  -> event_cluster
+  -> timeline_builder
+  -> cross_validator
+  -> report_writer
+```
+
+其中 `cross_validator` 后面还有条件分支：
+
+```text
+如果证据不足 -> 回到 source_search 继续补证据
+如果证据足够 -> 进入 report_writer
+```
+
+这类流程用 LangGraph 表达比手写循环更清晰，因为每个节点职责明确，状态字段也更结构化，例如 `queries`、`candidate_sources`、`pages`、`evidences`、`timeline`、`validation_notes`、`report`。
+
+代码里也保留了 fallback：
+
+```text
+优先构建 LangGraph
+  -> 如果 langgraph 可用，graph.ainvoke(state)
+  -> 如果不可用，走 _run_fallback() 手写流程
+```
+
+这说明项目里的设计取舍是：
+
+- 主 Agent：任务开放、交互频繁，用轻量手写 Runtime。
+- event_trace：流程固定、状态复杂、需要校验回路，用 LangGraph 风格状态机。
+
+### 面试回答模板
+
+可以这样回答：
+
+> Mini-Agent 的主 Runtime 是一个轻量的 tool-calling loop。它用 `messages` 作为核心状态，每轮调用 LLM，解析 `tool_calls`，执行工具，把结果作为 `tool` message 回填，再进入下一轮，直到模型不再调用工具。它的控制流主要由模型输出驱动，适合通用 CLI 工程助手。
+>
+> LangGraph 则是显式状态图运行时。它把任务拆成 node，用 state 在节点之间传递，用 edge 和 conditional edge 控制流程，还可以接 checkpointer 做持久化、恢复和人审。所以 LangGraph 更适合事件脉络、研究报告、多源验证这类多阶段流程。
+>
+> 这个项目里两种方式都有：主 Agent 用手写 Runtime 保持轻量；`event_trace` 这种固定链路则用 LangGraph 编排，并提供 fallback 手写流程。
+
 ## 4. 项目亮点
 
 ### 4.1 统一 LLM 协议适配
@@ -426,6 +561,53 @@ Bash 工具支持：
 超过阈值后，它会按用户轮次总结中间执行过程，保留用户意图和关键结果。
 
 这比简单裁剪历史更好，因为它能保留任务阶段信息。
+
+压缩的核心不是把所有历史都压成一段，而是按“用户轮次”重组消息：
+
+```text
+原始消息：
+system
+  -> user1
+  -> assistant/tool/tool/assistant...
+  -> user2
+  -> assistant/tool/tool/assistant...
+
+压缩后：
+system
+  -> user1
+  -> [Assistant Execution Summary for round 1]
+  -> user2
+  -> [Assistant Execution Summary for round 2]
+```
+
+保留内容：
+
+- `system prompt`：保留 Agent 身份、工具规则、workspace 信息。
+- 所有 `user message`：用户原始意图不压缩，避免需求被摘要改写。
+- 每轮执行摘要：保留完成了什么任务、调用了哪些工具、工具返回的关键结果、重要发现和阶段性结论。
+
+被压缩内容：
+
+- 详细 assistant 中间推理文本。
+- 大量 tool result 原文。
+- 重复的命令输出、文件内容、搜索结果和日志。
+- 已经能被一句结论表达的中间执行过程。
+
+触发条件：
+
+```text
+estimated_tokens > token_limit
+或
+api_total_tokens > token_limit
+```
+
+其中 `estimated_tokens` 来自本地 `tiktoken` 估算，`api_total_tokens` 来自上一次 LLM API 返回的 usage。只有超过阈值才会触发摘要，短任务不会额外调用模型。
+
+摘要生成失败时不会中断 Agent，而是退回到规则拼接的简单摘要，保证长任务继续执行。
+
+面试说法：
+
+> 我这里的上下文压缩不是简单删除旧消息，而是保留 system 和用户原始输入，把每个用户轮次后面的 assistant/tool 执行过程压成 `[Assistant Execution Summary]`。摘要重点保留完成的任务、调用过的工具、关键工具结果和阶段性结论，丢掉大段日志、重复输出和低价值中间过程。这样既降低 token，又不会丢掉任务连续性。
 
 ### 4.6 MCP 扩展
 
@@ -2086,16 +2268,295 @@ semantic_recall_notes(query="模型供应商配置")
 - embedding 模型要固定，否则历史向量可能和新向量空间不一致。
 - 生产环境最好增加删除、更新、过期和导出能力。
 
-#### 6.2.4 组合改造后的记忆架构
+#### 6.2.4 升级为 L1/L2/L3 三层 Memory 架构
+
+前面的 workspace 隔离和向量检索解决的是“记忆怎么隔离、怎么召回”的问题。如果要做成更完整的长期记忆系统，可以进一步升级为类似人脑的三层模型：
+
+```text
+L1 会话瞬时工作记忆
+  当前对话完整原始上下文，只在当前会话窗口有效
+
+L2 情景记忆 / 事件记忆
+  历次对话中的关键独立事件，结构化片段 + 时间戳 + 标签 + 向量索引
+
+L3 语义长期记忆 / 用户底层画像
+  跨会话提炼出的稳定特征，例如身份、偏好、长期目标和全局约束
+```
+
+核心思路是“写入分层、召回分层、压缩晋升”：
+
+```text
+用户输入 / Agent 行为
+        |
+        v
+L1 工作记忆
+  保留当前会话 transcript、工具调用和任务状态
+        |
+        | 事件抽取
+        v
+L2 情景记忆
+  沉淀发生过的关键事件，支持语义检索和时间/标签过滤
+        |
+        | 多次证据归纳、冲突检测、置信度更新
+        v
+L3 语义长期记忆
+  形成稳定用户画像和长期偏好，全局生效
+```
+
+##### L1：会话瞬时工作记忆
+
+L1 负责当前任务连续性。它保存当前 session 的原始消息、assistant thinking、tool calls、tool results 和 active task state。
+
+特点：
+
+- 生命周期只在当前会话窗口内有效。
+- 尽量保留原始上下文，不做过度结构化。
+- 超过 token 阈值后可以触发摘要，但摘要服务于当前会话，不直接等于长期记忆。
+- 适合支撑模型理解“刚才发生了什么”和“当前任务做到哪一步”。
+
+##### L2：情景记忆 / 事件记忆
+
+L2 负责记录“过去发生过什么”。它不是用户画像，而是历史事件库。
+
+适合写入 L2 的内容：
+
+- 用户明确提出过的重要需求。
+- 某次任务中的关键技术决策。
+- 用户对回答方式或工具行为的纠正。
+- 项目事实、阶段性结论、踩坑记录。
+- 可以在未来相似任务中复用的独立事件。
+
+写入时不要把整段对话塞进去，而是抽成短而具体的事件片段，并保留 source message id，保证可追溯。
+
+召回时可以按当前请求生成 query embedding，从 L2 里取 top-k 事件，再按相似度、时间、重要度、标签和置信度重排：
+
+```text
+score =
+  0.50 * semantic_similarity
++ 0.20 * importance
++ 0.15 * recency
++ 0.10 * tag_match
++ 0.05 * confidence
+```
+
+##### L3：语义长期记忆 / 用户底层画像
+
+L3 负责记录跨会话稳定特征，例如：
+
+- 用户身份和角色。
+- 长期偏好，例如回答风格、技术栈偏好。
+- 长期目标，例如正在构建某类 Agent 系统。
+- 全局约束，例如不要把敏感信息写入长期记忆。
+- 常用项目、组织、工作流。
+
+L3 不应该从单次对话里武断生成，除非用户明确声明。更稳妥的策略是：L2 中多次出现同类证据后，再把稳定结论晋升到 L3。每条 L3 claim 都要保存 evidence memory ids，方便解释、回滚和用户修正。
+
+##### 写入和召回链路
+
+写入链路：
+
+```text
+1. 当前轮消息进入 L1。
+2. 任务结束或阶段结束时，从 L1 抽取关键事件。
+3. 值得长期保存的事件写入 L2，并生成 embedding。
+4. Memory writer 检查 L2 事件是否支持某个稳定画像更新。
+5. 达到置信度阈值后，将稳定特征合并进 L3。
+```
+
+召回链路：
+
+```text
+1. 每轮响应前读取 L1 当前会话上下文。
+2. 用当前请求检索 L2 相关事件。
+3. 加载短版 L3 用户画像。
+4. 对 L2/L3 召回结果做去重、压缩和排序。
+5. 注入给 LLM，作为回答或工具决策的背景。
+```
+
+面试讲法：
+
+> 我会把记忆系统从简单 notes 升级成三层：L1 是当前会话工作记忆，保证任务连续；L2 是情景事件记忆，把历次对话中的关键事件结构化并向量化；L3 是语义长期记忆，只保存跨会话稳定的用户画像和偏好。L2 是 L3 的证据来源，L3 不直接从单轮对话武断生成。召回时默认加载短版 L3，再按当前任务从 L2 语义检索少量相关事件，避免把长期记忆变成上下文噪声。
+
+#### 6.2.5 L1/L2/L3 分别用什么结构存储
+
+三层 memory 的存储结构可以这样设计：
+
+| 层级 | 存储结构 | 主要数据形态 | 推荐后端 |
+| --- | --- | --- | --- |
+| L1 工作记忆 | 顺序消息列表 / Transcript Buffer | 原始对话、工具调用、当前任务状态 | 内存 / Redis / Postgres |
+| L2 情景记忆 | 事件表 + 向量索引 + 关系边 | 结构化事件片段、embedding、标签、时间戳 | Postgres + pgvector / Qdrant / Milvus |
+| L3 语义长期记忆 | 用户画像 JSON / Profile Graph | 稳定身份、偏好、约束、长期目标 | Postgres JSONB / Document DB / Graph DB |
+
+##### L1 存储结构
+
+L1 最适合用有序消息数组：
+
+```json
+{
+  "session_id": "s_123",
+  "user_id": "u_001",
+  "messages": [
+    {
+      "message_id": "m_001",
+      "role": "user",
+      "content": "如何设计 memory？",
+      "timestamp": "2026-06-13T10:00:00Z",
+      "token_count": 120
+    }
+  ],
+  "working_summary": "当前正在讨论三层 memory 架构。",
+  "active_task": "设计 L1/L2/L3 memory",
+  "active_entities": ["memory", "agent", "L1", "L2", "L3"]
+}
+```
+
+L1 可以保存在 Runtime 内存中；如果要支持恢复会话，可以追加写入 `sessions` 和 `messages` 表。
+
+##### L2 存储结构
+
+L2 用事件对象表达，一条记忆对应一个独立事件：
+
+```json
+{
+  "memory_id": "evt_001",
+  "user_id": "u_001",
+  "session_id": "s_123",
+  "event_type": "task_discussion",
+  "summary": "用户询问 L1-L3 分别适合用什么结构存储。",
+  "details": {
+    "topic": "memory architecture",
+    "question": "L1-L3 storage structure"
+  },
+  "tags": ["memory", "architecture", "storage"],
+  "entities": ["L1", "L2", "L3", "agent"],
+  "timestamp": "2026-06-13T10:20:00Z",
+  "importance": 0.72,
+  "confidence": 0.95,
+  "source": {
+    "message_ids": ["m_010"],
+    "session_id": "s_123"
+  }
+}
+```
+
+关系型表可以这样拆：
+
+```sql
+CREATE TABLE episodic_memories (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  workspace_id TEXT,
+  session_id TEXT,
+  event_type TEXT,
+  summary TEXT NOT NULL,
+  details JSONB,
+  tags TEXT[],
+  entities TEXT[],
+  importance FLOAT,
+  confidence FLOAT,
+  created_at TIMESTAMP,
+  updated_at TIMESTAMP
+);
+
+CREATE TABLE episodic_memory_embeddings (
+  memory_id TEXT PRIMARY KEY,
+  embedding VECTOR(1536)
+);
+
+CREATE TABLE memory_edges (
+  source_id TEXT,
+  target_id TEXT,
+  relation_type TEXT,
+  weight FLOAT,
+  created_at TIMESTAMP
+);
+```
+
+如果使用 `pgvector`，embedding 也可以直接放在 `episodic_memories` 表里。`memory_edges` 用于表达“支持、冲突、重复、属于同一任务、同一实体相关”等事件关联。
+
+##### L3 存储结构
+
+L3 适合用用户画像文档，并为每个结论保留 evidence：
+
+```json
+{
+  "user_id": "u_001",
+  "profile": {
+    "identity": [
+      {
+        "claim": "用户关注 agent memory 架构设计",
+        "confidence": 0.86,
+        "evidence": ["evt_001", "evt_002"],
+        "updated_at": "2026-06-13T10:30:00Z"
+      }
+    ],
+    "preferences": [
+      {
+        "key": "answer_style",
+        "value": "偏好结构化、工程化、直接的回答",
+        "confidence": 0.8,
+        "evidence": ["evt_003", "evt_004"],
+        "updated_at": "2026-06-13T10:30:00Z"
+      }
+    ],
+    "constraints": [
+      {
+        "key": "long_context_reading",
+        "value": "关心长内容读取是否完整，不希望只依赖截断结果",
+        "confidence": 0.9,
+        "evidence": ["evt_005"],
+        "updated_at": "2026-06-13T10:30:00Z"
+      }
+    ],
+    "long_term_goals": [
+      {
+        "goal": "构建具备分层长期记忆能力的 agent",
+        "confidence": 0.75,
+        "evidence": ["evt_001", "evt_006"],
+        "updated_at": "2026-06-13T10:30:00Z"
+      }
+    ]
+  }
+}
+```
+
+对应数据库可以先用一张 JSONB 表：
+
+```sql
+CREATE TABLE semantic_profiles (
+  user_id TEXT PRIMARY KEY,
+  profile JSONB NOT NULL,
+  updated_at TIMESTAMP
+);
+```
+
+MVP 选型：
+
+```text
+L1: SessionContext(messages: Message[], working_summary: string, active_state: object)
+L2: Postgres + pgvector 的 episodic_memories
+L3: Postgres semantic_profiles.profile JSONB
+```
+
+面试讲法：
+
+> L1 用顺序 transcript，因为它服务当前会话连续性；L2 用事件表加向量索引，因为它要表达过去发生过的独立事件并支持语义召回；L3 用用户画像 JSON 或 graph，因为它保存的是稳定 claim、偏好、约束和长期目标。L2 是事实证据层，L3 是归纳后的稳定画像层，两者通过 evidence id 关联。
+
+#### 6.2.6 组合改造后的记忆架构
 
 最终可以演进成：
 
 ```text
 Agent Runtime
    |
+   +--> L1 SessionContext
+   |      -> messages
+   |      -> working_summary
+   |      -> active_task_state
+   |
    +--> record_note
    |      -> workspace_id
-   |      -> JSON/SQLite metadata
+   |      -> L2 episodic memory metadata
    |      -> embedding
    |      -> vector store
    |
@@ -2103,14 +2564,18 @@ Agent Runtime
    |      -> category/time filter
    |
    +--> semantic_recall_notes
-          -> query embedding
-          -> workspace filter
-          -> top-k relevant notes
+   |      -> query embedding
+   |      -> workspace/user filter
+   |      -> top-k relevant L2 events
+   |
+   +--> semantic_profile
+          -> L3 user profile JSON
+          -> stable claims with evidence ids
 ```
 
 面试总结：
 
-> 我对记忆系统的改造分两层。第一层是 workspace 隔离，解决不同项目记忆互相污染的问题。第二层是语义检索，解决 notes 增多后无法高效召回的问题。这样 Agent 不只是“能记住”，而是能在合适的项目上下文里找回和当前任务最相关的历史信息。
+> 我对记忆系统的改造可以分阶段讲。第一阶段是 workspace 隔离，解决不同项目记忆互相污染的问题。第二阶段是语义检索，解决 notes 增多后无法高效召回的问题。第三阶段是升级成 L1/L2/L3 三层记忆：L1 保当前会话，L2 存可检索事件，L3 存稳定画像。这样 Agent 不只是“能记住”，而是能区分当前上下文、历史事件和长期偏好，并在合适的时候召回最相关的信息。
 
 ### 6.3 增强安全边界
 
@@ -2392,6 +2857,77 @@ ReportWriter
 - `CrossValidator`：检查每个事件是否有多个来源支持，识别冲突、不确定点和单一来源风险。
 - `ReportWriter`：生成带引用的 Markdown 报告。
 
+##### EventCluster 归并事件簇怎么做
+
+事件簇不是让模型直接自由总结出来的，而是先从页面里抽取结构化 `Evidence`，再把多条 evidence 归并成一个 `EventCluster`。
+
+`Evidence` 至少包含：
+
+```text
+event_time
+actor
+action
+claim
+source_url
+source_title
+quote
+published_at
+confidence
+validation_status
+```
+
+当前实现里的归并规则比较保守，核心是两条：
+
+```python
+same_time = evidence.event_time == cluster.event_time and evidence.event_time != "unknown"
+similar = _overlap_score(evidence.claim, cluster.summary) >= 0.28
+
+if same_time or similar:
+    target = cluster
+```
+
+也就是说，新 evidence 会被合并进已有事件簇，只要满足任意一个条件：
+
+- `event_time` 相同，并且不是 `unknown`。
+- `claim` 和已有 cluster 的 `summary` 文本重叠度达到阈值，目前是 `0.28`。
+
+如果没有匹配到已有簇，就新建一个事件簇：
+
+```text
+EventCluster
+  event_time = evidence.event_time
+  summary = evidence.claim
+  actor = evidence.actor
+  evidences = []
+  source_urls = []
+```
+
+随后把 evidence 追加进 `cluster.evidences`，并把 `source_url` 去重追加进 `cluster.source_urls`。最后用簇内 evidence 的平均置信度计算 cluster confidence：
+
+```text
+cluster.confidence = avg(evidence.confidence)
+```
+
+这样做的好处是：
+
+- 每个时间线节点都能回溯到原始 evidence。
+- 一个事件可以聚合多个来源，便于后续多源验证。
+- 报告引用不是凭空生成，而是来自 cluster 的 `source_urls` 和 evidence quote。
+
+需要注意的是，当前规则是 MVP 做法，不是完整语义聚类。如果多个不同事件发生在同一天，`same_time` 可能误合并；如果两个来源用不同措辞描述同一事件，文本 overlap 可能漏合并。后续可以升级成：
+
+```text
+时间相近
++ actor 相同或别名匹配
++ action 类型相似
++ claim embedding 相似
++ source 去重和可信度加权
+```
+
+面试讲法：
+
+> EventCluster 的输入不是网页原文，而是 EvidenceExtract 产出的结构化 evidence。每条 evidence 都有 event_time、actor、claim、source_url、quote 和 confidence。归并时优先按事件时间合并，其次用 claim 文本重叠度判断是否是同一事件；合并后保留所有 evidence 和 source_urls，再由 CrossValidator 判断这个事件是多源 supported、single_source、unsupported 还是 conflicted。这样时间线是从可追溯证据聚合出来的，而不是模型直接编出来的。
+
 核心 state 可以这样设计：
 
 ```python
@@ -2533,7 +3069,7 @@ mini-agent trace "某公司产品故障" --llm-judge
 - `web_search`：根据 query 检索候选来源。
 - `fetch_page`：抓取页面正文和 metadata。
 - `extract_evidence`：调用 LLM，把正文抽取成结构化证据。
-- `cluster_events`：按时间、主体、动作和语义相似度归并事件。
+- `cluster_events`：把结构化 evidence 按 `event_time` 或 `claim` 文本相似度归并成事件簇。
 - `validate_events`：检查事件簇是否有多源支持，识别冲突。
 - `write_report`：生成 Markdown 报告，并保留引用链接。
 
@@ -3104,6 +3640,36 @@ mini-agent trace-eval cases/acme_outage.json --output eval/acme_result.json
 
 `trace-eval` 会读取本地 sources，运行完整事件脉络 Agent，然后输出 `citation_coverage`、`unsupported_claim_rate`、`required_event_recall` 等指标。相对 source 路径按 case 文件所在目录解析，输出路径仍然受 workspace 沙箱限制。
 
+##### 封闭评测集规模
+
+封闭评测集不要一开始做太大。事件脉络任务的标注成本比普通问答高，因为每条样本不仅要有输入，还要维护本地网页快照、关键事件、期望引用和已知冲突点。
+
+起步阶段可以准备 `10-20` 个 case，用来验证链路是否稳定：
+
+- `3-5` 个简单单事件：例如一次产品故障、一次政策发布、一次公告更新。
+- `3-5` 个多阶段事件：例如事故调查、公司并购进展、监管处罚流程。
+- `3-5` 个有冲突说法的事件：不同来源对时间、责任方或结果描述不一致。
+- `2-3` 个信息不足或无有效来源的 case：验证系统是否能诚实输出 gap，而不是编造时间线。
+
+面试或项目展示阶段，比较合适的目标是 `30-50` 个 case。这个量级已经能体现评测意识，也足够让 `citation_coverage`、`unsupported_claim_rate`、`required_event_recall` 等指标有基本参考价值。
+
+可以按下面比例组织：
+
+```text
+普通时间线           10-15
+多源交叉验证          8-12
+冲突 / 争议事件       5-8
+弱证据 / 单来源事件    5-8
+无结果 / 低质量来源    3-5
+中英文混合来源         3-5
+```
+
+成熟产品化阶段再扩展到 `100+` 个 case，并按领域分层维护，例如科技产品事故、公共政策变化、公司公告 / 诉讼、安全事件、国际新闻和金融监管事件。但这个规模需要持续维护 gold timeline、expected citations 和 known conflicts，不适合作为早期目标。
+
+面试时可以这样说：
+
+> 我不会一开始追求很大的评测集。第一阶段用 10-20 个封闭样本保证链路稳定；项目展示阶段扩到 30-50 个，覆盖普通时间线、多源验证、冲突事件、弱证据和无结果场景；如果后续产品化，再扩展到 100+ 并按业务领域分层维护。
+
 ##### 节点评测
 
 按节点分别评测，比只评最终报告更容易定位问题：
@@ -3177,6 +3743,47 @@ LLM Judge 的提示词要限制得很窄：
 Agent 执行真实任务会产生大量工具结果，直接保留会超上下文。
 
 摘要可以保留阶段性结果，降低 token 成本。
+
+但摘要不是每轮都做。`Agent.run()` 每轮调用模型前会检查 `_summarize_messages()`，它同时看两个指标：
+
+```text
+estimated_tokens > token_limit
+或
+api_total_tokens > token_limit
+```
+
+只有超过阈值时才触发摘要；如果上下文还不长，就直接返回，不会额外调用模型。
+
+摘要生成本身是调用当前配置的 LLM 完成的，逻辑在 `_create_summary()`。它会把一轮里的 assistant 消息、tool call 和 tool result 整理成 summary prompt，请模型生成一个简洁执行摘要。生成成功后，原来的 assistant/tool 中间过程会被替换成一条 `[Assistant Execution Summary]`。如果摘要模型调用失败，代码会退回到规则拼接的 `summary_content`，避免整个 Agent 因摘要失败而中断。
+
+压缩后的消息结构大致是：
+
+```text
+system
+user 原始需求 1
+[Assistant Execution Summary]
+user 原始需求 2
+[Assistant Execution Summary]
+```
+
+这个 summary 主要压缩的是 Agent 执行过程，而不是用户需求本身。它应该保留：
+
+- 已完成的子任务。
+- 调用过的工具名。
+- 工具返回的关键事实或错误。
+- 已经确认的文件路径、命令结果、测试结果。
+- 后续步骤仍然依赖的阶段性结论。
+
+它可以丢弃：
+
+- 大段原始日志。
+- 重复的 tool output。
+- 长文件内容的完整正文。
+- 对后续决策没有影响的中间细节。
+
+面试可以这样说：
+
+> 这个项目不是固定每轮都摘要，而是按 token 阈值触发。每轮模型调用前，Runtime 会先用 `tiktoken` 做本地估算，同时参考上次 API 返回的 token usage；如果没有超过 `token_limit`，不会做任何摘要，也不会产生额外模型调用。只有长任务上下文膨胀时，才调用 LLM 把 assistant/tool 执行过程压缩成 summary，保留用户原始意图和关键执行结果。
 
 ### 7.3 MCP 和普通工具有什么区别？
 
