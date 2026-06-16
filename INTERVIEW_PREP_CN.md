@@ -625,6 +625,35 @@ api_total_tokens > token_limit
 
 这个点可以讲成上下文成本优化。
 
+#### anysearch Skill 扩展
+
+这次新增的 `anysearch` 是一个更贴近真实业务的 Skill 扩展示例。它不是把搜索能力硬编码进 Agent 主循环，而是把“如何使用外部实时搜索服务”的流程说明、CLI 脚本和运行配置打包成一个 Skill。
+
+它带来的能力包括：
+
+- 实时 Web Search：查询最新公开网页信息。
+- 垂直域搜索：按 Skill 支持的 domain/sub-domain 做更精确检索。
+- 批量搜索：一次性执行多个 query，适合调研类任务。
+- URL 内容提取：对指定网页做正文抽取，补足普通搜索摘要信息不足的问题。
+- Skill 内脚本复用：通过 `scripts/anysearch_cli.py` 等脚本调用外部 AnySearch API，不需要把 API 调用逻辑写进 Agent 核心。
+
+对应执行链路：
+
+```text
+用户点名 anysearch skill
+  -> Runtime 识别到显式 skill 请求
+  -> 自动调用 get_skill(skill_name="anysearch")
+  -> 返回 anysearch 的 SKILL.md、Skill Root Directory 和脚本使用说明
+  -> LLM 按 Skill 指导调用 bash 执行 anysearch CLI
+  -> 搜索 / 批量搜索 / URL 抽取结果回填给主对话
+```
+
+这次还补了一个工程兜底：如果用户明确说“使用 anysearch skill”，Runtime 会在模型调用前自动加载 `get_skill(anysearch)`。这样不会只依赖模型自己选择 `get_skill`，可以避免模型绕过 Skill 直接调用普通 `web_search`。
+
+可以这样讲：
+
+> 我把实时搜索能力做成了 Skill 级扩展，而不是只加一个固定的 `web_search` 工具。`web_search` 适合轻量查询，`anysearch` Skill 更像一套可复用的搜索操作手册，包含查询、批量查询、URL 抽取和运行脚本。为了保证用户点名 Skill 时一定生效，我还在 Runtime 里加了显式 Skill 自动加载逻辑：识别到“使用 anysearch skill”后，会先自动调用 `get_skill`，再让模型按 Skill 指导执行后续步骤。
+
 ### 4.8 可观测性和稳定性
 
 项目包含：
@@ -1023,21 +1052,38 @@ Step 6
 
 ### Demo 3：MCP 或 Skill
 
-接一个简单 MCP server，或者用内置 Skill 完成文档、测试、设计类任务。
+接一个简单 MCP server，或者用 Skill 扩展完成搜索、文档、测试、设计类任务。
 
 展示重点：
 
 - 工具动态扩展
 - Skills 按需加载
-- Agent 能力从本地工具扩展到外部服务
+- Agent 能力从本地工具扩展到外部服务和专业流程
 
 #### Demo 3 详细演示脚本
 
 这个 Demo 的目标是展示 Agent 的能力不是写死在本地工具里，而是可以通过 Skills 和 MCP 扩展。
 
-建议优先演示 Skill，因为当前项目已经内置了多种 Skills，不需要额外搭 MCP server。
+建议优先演示 `anysearch` Skill，因为它能同时展示 Skill 渐进式加载、外部实时服务接入、脚本型扩展和用户点名 Skill 的自动加载兜底。
 
 推荐演示任务：
+
+```text
+使用 anysearch skill 搜索 OpenAI 最新进展；
+先加载 anysearch skill；
+再根据搜索结果总结 5 条最重要更新，并保留来源链接。
+```
+
+这个任务适合作为 Skill Demo，因为它会自然触发：
+
+- 用户显式点名 `anysearch skill`
+- Runtime 自动调用 `get_skill(anysearch)`
+- Skill 完整内容按需加载
+- LLM 按 Skill 指导调用 anysearch CLI
+- 外部搜索结果回填给主对话
+- 最后输出带来源的实时信息总结
+
+也可以演示一个文档/代码巡检类 Skill：
 
 ```text
 请查看当前可用的 Skills，选择适合“代码仓库自动巡检报告”的 Skill；
@@ -1046,7 +1092,7 @@ Step 6
 写入 workspace/repo_inspection_report.md。
 ```
 
-这个任务适合作为 Skill Demo，因为它会自然触发：
+这个备选任务会自然触发：
 
 - 系统 prompt 中的 Skill metadata
 - `get_skill` 工具调用
@@ -1063,6 +1109,13 @@ tools:
   enable_skills: true
 ```
 
+确认 `anysearch` Skill 已放到 Skills 目录，例如：
+
+```text
+mini_agent/skills/anysearch/SKILL.md
+mini_agent/skills/anysearch/scripts/anysearch_cli.py
+```
+
 启动 Agent：
 
 ```bash
@@ -1073,10 +1126,9 @@ uv run python -m mini_agent.cli --workspace .
 #### 演示输入
 
 ```text
-请查看当前可用的 Skills，选择适合“代码仓库自动巡检报告”的 Skill；
-加载该 Skill 的完整内容；
-然后基于当前 Mini-Agent 项目，生成一份适合面试展示的代码仓库巡检报告，
-写入 workspace/repo_inspection_report.md。
+使用 anysearch skill 搜索 OpenAI 最新进展；
+先加载 anysearch skill；
+再根据搜索结果总结 5 条最重要更新，并保留来源链接。
 ```
 
 #### 现场讲解重点 1：Skills 不是普通 prompt 模板
@@ -1107,7 +1159,7 @@ Skills 是一组可复用的专业能力说明，每个 Skill 有自己的 `SKIL
 ```text
 启动时发现 Skills
   -> system prompt 只注入 name + description
-  -> LLM 判断当前任务需要某个 Skill
+  -> 用户点名 Skill 时 Runtime 自动加载，或 LLM 判断当前任务需要某个 Skill
   -> 调用 get_skill
   -> Runtime 返回该 Skill 完整内容
   -> LLM 按 Skill 指导执行任务
@@ -1117,6 +1169,18 @@ Skills 是一组可复用的专业能力说明，每个 Skill 有自己的 `SKIL
 
 > 如果一次性加载所有 Skill，prompt 会非常长，成本高且干扰模型判断。这里采用渐进式加载，先让模型知道有哪些技能，真正需要时再加载完整内容。
 
+这次 `anysearch` 还补了显式 Skill 自动加载：
+
+```text
+用户输入："使用 anysearch skill ..."
+  -> _mentioned_skill_name() 识别已注册 Skill 名称
+  -> _maybe_auto_load_requested_skill()
+  -> get_skill(anysearch)
+  -> 后续 LLM 请求已经包含 anysearch 完整指导
+```
+
+这个设计解决的是“Skill 已经被发现，但模型没有先调用 `get_skill`”的问题。
+
 #### 现场讲解重点 3：Agent 能力从本地工具扩展到专业流程
 
 基础工具只能提供“能力原语”，比如读文件、写文件、跑命令。
@@ -1125,7 +1189,7 @@ Skill 提供的是“完成某类任务的方法论”。
 
 可以这样讲：
 
-> 工具解决的是能不能做，Skill 解决的是该怎么做。比如 `read_file` 只能读文件，但代码巡检类 Skill 可以指导 Agent 先看项目结构、再看核心模块、再总结风险和改进建议。
+> 工具解决的是能不能做，Skill 解决的是该怎么做。比如 `web_search` 只是一个搜索工具，而 `anysearch` Skill 会告诉 Agent 该用哪个脚本、怎么做普通搜索/批量搜索/URL 抽取、API key 放在哪里、失败时如何降级。Skill 把一组外部能力组织成可复用的专业流程。
 
 #### 预期演示过程
 
@@ -1137,26 +1201,21 @@ Skill 提供的是“完成某类任务的方法论”。
 
 Step 1
   Tool Call: get_skill
-  Arguments: skill_name=...
-  Result: 返回完整 Skill 内容
+  Arguments: skill_name=anysearch
+  Result: 返回 anysearch 完整 Skill 内容
 
 Step 2
-  Tool Call: read_file
-  Arguments: README.md 或核心源码
-  Result: 返回项目说明或源码
+  Tool Call: bash
+  Arguments: python mini_agent/skills/anysearch/scripts/anysearch_cli.py search ...
+  Result: 返回搜索结果
 
 Step 3
-  Tool Call: read_file
-  Arguments: mini_agent/agent.py
-  Result: 返回 Agent 主循环
+  Tool Call: bash
+  Arguments: python mini_agent/skills/anysearch/scripts/anysearch_cli.py extract ...
+  Result: 返回网页正文或结构化内容
 
 Step 4
-  Tool Call: write_file
-  Arguments: workspace/repo_inspection_report.md
-  Result: 写入巡检报告
-
-Step 5
-  Assistant: 总结报告已生成
+  Assistant: 总结 OpenAI 最新进展，并附来源链接
 ```
 
 #### MCP 备选演示
@@ -1187,12 +1246,14 @@ mcp.json
 
 可以这样组织：
 
-> 这个 Demo 展示的是 Agent 的扩展机制。基础工具提供读写文件和命令执行这类原子能力，但面对专业任务，Agent 还需要流程性知识。项目通过 Skills 做渐进式加载：启动时只把 Skill 名称和描述放进 prompt，模型判断需要时再调用 `get_skill` 获取完整内容。这样既节省上下文，又能让 Agent 获得面向具体任务的操作手册。如果要接外部系统，则通过 MCP 动态发现远程工具，并包装成统一 `Tool`，让 Agent 主循环无感调用。
+> 这个 Demo 展示的是 Agent 的扩展机制。基础工具提供读写文件、命令执行和普通搜索这类原子能力，但面对实时调研任务，Agent 还需要知道用哪个外部搜索服务、怎么批量查、怎么抽取 URL 内容、失败时怎么处理。`anysearch` Skill 把这些流程和脚本打包起来，通过渐进式加载接入 Runtime。启动时只注入 Skill 名称和描述，用户点名 `anysearch skill` 时 Runtime 会先自动调用 `get_skill`，再让模型按完整 Skill 指导执行。这样 Agent 核心主循环不用改，就能扩展到新的外部服务和专业流程。
 
 #### 可以强调的工程价值
 
 - Skills 让 Agent 从“能调用工具”提升到“知道怎么完成专业任务”。
 - 渐进式加载减少上下文浪费。
+- 显式 Skill 自动加载让用户点名的扩展能力稳定生效。
+- `anysearch` 展示了通过 Skill + CLI 脚本接入外部实时服务的方式。
 - MCP 让工具来源从本地扩展到外部服务。
 - 本地工具、Skill 工具、MCP 工具最终都统一成 `Tool` 接口。
 - 扩展能力不需要修改 Agent 主循环。
@@ -2767,6 +2828,23 @@ ToolResult(
 
 这个场景比普通“搜索总结”更适合作为 Agent 项目亮点，因为它有明确的多阶段链路、状态管理、证据结构、引用约束和评测标准。
 
+它也非常适合作为 Agent / 大模型算法相关岗位的项目来讲。原因是它天然不是单轮问答，而是一个开放式复杂任务：用户目标需要先规划、再检索、再抓取、再抽取、再验证，最后才能写报告。这个过程中可以自然体现 Planner、Tool Use、Memory、Reflection、Long-running Workflow、结构化输出、引用忠实度判断、多模型路由和评测指标。
+
+面试定位可以这样说：
+
+> 我做的不是一个“搜索后总结”的普通问答功能，而是一个面向热点事件追踪和深度研究的 Agent 工作流。系统把开放式研究任务拆成规划、搜索、抓取、证据抽取、事件聚合、交叉验证、反思补检和带引用报告生成多个阶段，并通过结构化 evidence、引用校验、规则兜底和评测指标来控制事实幻觉。
+
+同时也要诚实说明它的边界。这个场景很难做到生产级稳定，原因不是单个 prompt 写得不好，而是外部依赖本身不稳定：
+
+- 搜索引擎可能召回不到关键来源，或者中文热点覆盖不足。
+- 网页可能反爬、登录、动态渲染，正文抽取会混入导航和广告。
+- 免费模型可能超时、限流、输出格式不稳定。
+- 热点事件里自媒体、社媒和二手转述很多，事实链天然噪声高。
+
+所以更专业的讲法不是“我已经实现了稳定的 Deep Research”，而是：
+
+> 当前效果还没有达到生产级 Deep Research，主要瓶颈在搜索召回、网页抓取和模型稳定性。但我把不可控的开放式研究任务拆成了可观测、可回退、可评测的工作流。搜索失败、网页抓取失败、LLM 输出不合法时不会静默失败，而是进入 fallback、反思补检或审计日志，方便后续针对具体节点优化。
+
 #### 6.4.1 事件脉络 Agent 的核心链路
 
 主链路可以设计成：
@@ -3427,6 +3505,116 @@ the event_trace tool instead of doing ad hoc web search and summarization.
 
 > 我会先把事件脉络能力做成主 Agent 的高阶工具，而不是直接做 subagent。原因是当前 Mini-Agent 已经有稳定的 Tool 抽象，而 `EventTraceAgent` 本身已经是一个独立 workflow；用工具包装可以低成本接入主 Agent，同时保留上下文隔离、专用安全策略、审计文件和评测能力。等类似独立能力变多之后，再把这些高阶工具背后的共性抽象成真正的 subagent runtime。
 
+###### 后续收敛计划：降低两套系统的冗余
+
+当前 `event_trace` 和主 Agent Runtime 的关系更像“主框架 + 专用 workflow 插件”，而不是完全共享一套 planner / memory / reflector。这个隔离在第一阶段是有价值的：事件脉络任务流程固定、状态大、需要证据审计和离线评测，直接塞进主 Agent 的通用 ReAct loop 会让上下文和控制流都变复杂。
+
+但长期看，这种隔离会带来维护成本：
+
+- **概念重复**：`EventTraceMemory`、`ResponsibleTaskPlanner`、`Reflector` 和未来主框架里的 memory / planner / reflector 容易重名但语义不同。
+- **配置分叉**：`event_trace_models` 是专门给 planner / extractor / judge / reflector 做的模型路由，和主 Agent 的 LLM 配置不是同一层抽象。
+- **观测分叉**：主 Agent 用 `AgentLogger`，`event_trace` 用 `EventTraceRunRecorder`，日志、审计和运行状态格式不统一。
+- **状态分叉**：主 Agent 主要维护 message history 和 tool result，`event_trace` 维护 `EventTraceState`，两边不能自然共享中间状态。
+- **记忆分叉**：主 memory 是 Chroma 向量记忆工具，`event_trace` 是 workspace 下的 jsonl evidence memory，召回逻辑不能互通。
+
+所以后续演进不应该把 `event_trace` 简单改回普通工具调用，也不应该立刻重写成完整多 Agent 系统，而是抽出一层共享的 workflow / subagent runtime 能力：
+
+```text
+当前：
+主 Agent Runtime
+event_trace 专用 Workflow
+
+下一阶段：
+主 Agent Runtime
+Workflow / Subagent Runtime
+  - shared LLM routing
+  - shared memory interface
+  - shared recorder / logger
+  - shared workspace artifact API
+  - shared cancellation / progress API
+event_trace 作为其中一个 workflow
+```
+
+分阶段改造计划：
+
+第一阶段：统一接口，不急着统一实现。
+
+先抽出轻量协议，而不是马上替换底层存储：
+
+```python
+class MemoryStore(Protocol):
+    async def add(self, record: dict[str, Any]) -> None: ...
+    async def query(self, query: str, *, top_k: int = 5, scope: str | None = None) -> list[dict[str, Any]]: ...
+
+class RunRecorder(Protocol):
+    def record_start(self, node: str, state: dict[str, Any]) -> None: ...
+    def record_end(self, node: str, state: dict[str, Any], error: str | None = None) -> None: ...
+
+class LLMRouter(Protocol):
+    def client_for(self, role: str) -> LLMClient | None: ...
+```
+
+`event_trace` 可以继续使用 jsonl evidence memory 和自己的 recorder，但依赖这些协议。主 Agent 的 vector memory、logger 也逐步适配同一组协议。
+
+第二阶段：收敛日志和审计。
+
+优先把 `AgentLogger` 和 `EventTraceRunRecorder` 的输出模型统一，至少保证每次运行都有一致的 run id、step/node 名称、输入摘要、输出摘要、错误、耗时和 artifact 路径。这样调试主 Agent 调用 `event_trace` 时，不需要在两套日志格式之间跳转。
+
+建议目标结构：
+
+```text
+workspace/.mini_agent/runs/<run_id>/
+  agent_log.jsonl
+  tool_trace.jsonl
+  workflows/
+    event_trace/<workflow_run_id>/
+      state.json
+      audit.jsonl
+      report.md
+```
+
+第三阶段：把 memory 做成可插拔。
+
+`event_trace` 的 evidence memory 不一定要直接改成 Chroma，因为证据对象有 citation、source、quote、validation_status 等结构化字段，纯向量召回并不够。但它应该通过统一 `MemoryStore` 接口接入，底层可以有多个实现：
+
+- `JsonlEvidenceMemoryStore`：保留当前轻量、可审计、易测试的 jsonl 方案。
+- `ChromaMemoryStore`：复用主 Agent 的向量召回能力。
+- `HybridEvidenceMemoryStore`：结构化过滤 + 向量召回结合。
+
+第四阶段：统一模型路由。
+
+把 `event_trace_models` 从孤立配置升级为通用 role-based LLM routing：
+
+```yaml
+llm_routes:
+  default: ...
+  planner: ...
+  extractor: ...
+  judge: ...
+  reflector: ...
+```
+
+主 Agent、skills、MCP 工具和 `event_trace` 都可以通过 `LLMRouter.client_for(role)` 获取模型。这样保留不同角色使用不同模型的能力，但不再让每个 workflow 自己发明一套配置结构。
+
+第五阶段：沉淀 workflow runtime。
+
+当项目里出现多个类似 `event_trace` 的高阶能力，例如 `code_review_agent`、`security_audit_agent`、`data_analysis_agent`，再把共性抽成一等 runtime：
+
+- workflow registry。
+- 独立 system prompt / task prompt。
+- 工具 allowlist / denylist。
+- 独立上下文窗口和压缩策略。
+- cancellation / progress 传播。
+- artifact 输出协议。
+- run recorder 和 eval harness。
+- workflow 结果压缩回主 Agent 的协议。
+
+`event_trace` 到那时就不是一个特殊工具，而是第一个迁移到 workflow runtime 上的样板实现。
+
+面试表达可以这样收束：
+
+> 当前 `event_trace` 确实和主 Runtime 存在 planner、memory、recorder 等概念上的重复，但这是为了先把事件研究这种强流程、强审计、强评测的能力隔离出来，避免过早重构主 Agent。我的后续计划不是把两套系统硬合并，而是先抽 `MemoryStore`、`RunRecorder`、`LLMRouter`、`ArtifactWriter` 这些共享协议，再逐步把日志、模型路由、记忆和 workflow 生命周期收敛。这样既保留 `event_trace` 状态机的确定性，也能避免未来多个高阶 workflow 各自造一套 runtime。
+
 #### 6.4.6 Memory 系统设计
 
 事件脉络 Agent 需要的不只是“聊天记忆”，而是面向证据和事件的检索式 memory。可以分成三层：
@@ -3518,6 +3706,8 @@ Vector Store
 
 事件脉络 Agent 可以按 LLM、Runtime、Harness 三层来拆能力。这样面试时能说清楚：哪些已经是基础可运行能力，哪些是后续升级方向。
 
+这一节面试时要特别强调：Agent 项目的价值不只在“最后答案看起来好不好”，更在于把失败点拆开。热点事件分析经常做不好，通常不是一个模块的问题，而是搜索、抓取、抽取、验证、报告多个环节叠加导致的。能把这些环节拆成可观测节点，本身就是 Agent 工程能力。
+
 ##### LLM 能力
 
 基础能力：
@@ -3526,6 +3716,8 @@ Vector Store
 - `Rule Planner Fallback`：LLM 失败、超时、返回非法 JSON 时回退规则计划。
 - `LLM Evidence Extractor`：从页面正文抽取 `event_time`、`actor`、`claim`、`quote`、`confidence`。
 - `LLM Judge`：只基于 quote 判断 claim 是否被支持，评估 citation faithfulness；默认有规则兜底。
+- `LLM Reflector`：根据弱证据、缺引用、无来源和冲突状态判断是否需要补充检索，生成更有针对性的 query。
+- `Multi-model Routing`：Planner、Extractor、Judge、Reflector 可以走不同模型，避免所有节点依赖同一个模型能力。
 - `Conflict Detector`：在多源证据中识别确认/否认、上涨/下跌、中断/恢复等相反信号；默认先用规则检测。
 - `Schema Validation`：LLM planner 和 evidence extractor 的输出都要经过结构化校验，字段不合法就跳过或降级。
 
@@ -3539,12 +3731,14 @@ Vector Store
 基础能力：
 
 - LangGraph 工作流编排：规划、搜索、抓取、抽取、聚类、时间线、交叉验证、报告生成。
+- SearchProvider 可插拔：支持 AnySearch / Tavily，不把事件研究绑定在单一搜索服务上；搜索失败或返回空时可以 fallback。
 - 网络沙箱：抓取页面前拦截 localhost、内网地址、link-local、metadata 等非公开网络目标。
 - 页面缓存：抓取成功的页面缓存到 workspace 下，便于复现、减少重复请求。
 - 超时和大小限制：搜索和抓取要有 timeout，页面响应大小要有限制。
 - Memory 写入：把 evidence 以 JSONL 形式沉淀，并保留 source_url、quote、验证状态。
 - Run 目录：每次运行生成 `run_id`，持久化 `state.json`、`report.md` 和 `audit.jsonl`。
 - 审计日志：记录每个节点耗时、输入输出数量和失败原因，方便复盘。
+- 进度输出：运行时打印当前节点、使用的搜索引擎、各模块模型、输入输出数量和耗时，避免长任务“黑盒等待”。
 - Workspace 路径沙箱：`--output`、`--json`、cache、memory 和 run 目录都限制在 workspace 内。
 
 升级能力：
@@ -3813,11 +4007,83 @@ Skill 内容很长，全部放入 system prompt 会浪费上下文。
 
 这个回答能体现你真的理解项目边界。
 
+### 7.6 热点事件脉络为什么适合做 Agent 项目？
+
+因为它天然不是单轮问答，而是多阶段任务。普通 LLM 可以直接总结，但很难保证来源、时间顺序和引用忠实度。事件脉络任务至少包含：
+
+- Query planning：把用户问题拆成检索 query 和必答问题。
+- Tool use：调用搜索、网页抓取、文件读写和记忆工具。
+- Evidence extraction：从网页里抽结构化事件证据。
+- Cross validation：判断证据是否多源支持、单来源、冲突或不支持。
+- Reflection：发现缺口后补充检索。
+- Report writing：基于证据生成带引用报告。
+
+面试讲法：
+
+> 这个场景适合 Agent 是因为它需要“做事”，不是只需要“回答”。模型要规划下一步、调用外部工具、读取工具结果、判断证据是否足够，并在不足时补充检索。LangGraph 让这些步骤显式化，Runtime 负责状态、日志、fallback 和安全边界。
+
+### 7.7 如果效果总是不好，怎么解释？
+
+不要硬说效果很好。更好的回答是：
+
+> 当前效果还没有达到生产级 Deep Research，主要瓶颈在搜索召回、网页正文抽取和免费模型稳定性。但我没有把它当成一次性 demo，而是把链路拆成可评测节点：搜索看召回率，抽取看 required_event_recall，报告看 citation_coverage 和 unsupported_claim_rate。项目价值在于建立了 Agent 化研究任务的工程框架，后续可以通过更好的搜索源、专用抽取模型和评测集持续迭代。
+
+可以把“不稳定”拆成工程改进点：
+
+- 搜索不稳定：抽象 `SearchProvider`，支持 AnySearch / Tavily 可插拔和 fallback。
+- 网页抓取噪声：保留 `source_url`、`quote`、`published_at`，并记录抓取错误。
+- 模型输出不稳定：要求 JSON schema，非法输出回退规则逻辑。
+- 引用不可靠：报告只从结构化 evidence 取事实和引用，不让模型自由编事实。
+- 免费模型超时：quick 模式走规则，deep 模式才启用多模型路由。
+- 效果难衡量：用 Eval Harness 统计 citation coverage、unsupported claim rate 和关键事件召回。
+
+### 7.8 这个和普通 RAG 有什么区别？
+
+普通 RAG 通常是：
+
+```text
+检索相关文档 -> 拼上下文 -> 让模型回答
+```
+
+事件脉络 Agent 是：
+
+```text
+规划问题 -> 多轮搜索 -> 抓取网页 -> 抽取证据 -> 聚合事件 -> 校验引用 -> 反思补检 -> 生成报告
+```
+
+核心差别：
+
+- RAG 偏一次性问答，事件脉络 Agent 偏长链路任务执行。
+- RAG 通常只关心最终答案，事件脉络 Agent 还关心证据链、时间线和中间状态。
+- RAG 的失败较难定位，事件脉络 Agent 可以按节点定位是搜索、抓取、抽取、验证还是报告生成出了问题。
+- RAG 容易把检索片段直接交给模型自由发挥，事件脉络 Agent 要求 evidence schema 和引用校验。
+
 ## 8. 推荐面试叙事
 
 可以这样讲：
 
 > 我复现并扩展了一个 Mini Agent Runtime。最开始我关注的是 Agent 的核心闭环：LLM 如何选择工具、工具结果如何回填、什么时候停止。之后我把它拆成三层：LLM 协议适配层、Agent 执行层、工具扩展层。为了让它能处理真实工程任务，我加入/研究了长上下文摘要、后台 Shell 管理、MCP 动态工具接入、Skills 渐进式加载和完整日志。我的后续改造重点是安全沙箱、结构化长期记忆，以及用 LangGraph 编排“事件脉络 Agent”：从检索来源、抽取证据、构建时间线到多源验证和带引用报告生成。
+
+如果面试岗位偏 Agent / 大模型算法，可以把叙事更聚焦到事件脉络场景：
+
+> 我做的是一个面向热点事件追踪和深度研究的 Agent 工作流。传统 LLM 直接回答时容易依赖静态知识，也很难保证实时性、证据链和引用可靠性。所以我基于 Mini-Agent Runtime 和 LangGraph，把研究任务拆成 Planner、Source Search、Page Fetch、Evidence Extract、Event Cluster、Citation Judge、Reflector 和 Report Writer 多个节点。每个节点都有明确输入输出，LLM 输出必须做 schema 校验，失败时回退规则逻辑；搜索层支持 AnySearch / Tavily 可插拔和 fallback；运行过程会持久化 state、report 和 audit log。这个项目目前还不是生产级 Deep Research，效果受搜索召回、网页抓取和模型稳定性影响，但它把开放式研究任务拆成了可观测、可回退、可评测的工程闭环。
+
+如果面试官偏算法，可以强调：
+
+- Planner 如何生成检索计划和证据标准。
+- Extractor 如何把网页正文转为结构化 evidence。
+- Judge 如何只基于 quote 判断 claim 是否被支持。
+- Reflector 如何根据弱证据触发补充检索。
+- 多模型路由如何让不同模块使用不同模型。
+- Eval Harness 如何评估 citation faithfulness 和 unsupported claim。
+
+如果面试官偏工程，可以强调：
+
+- Runtime 如何维护工具调用闭环。
+- LangGraph 如何让长链路任务显式化。
+- SearchProvider、Fetcher、Extractor、Judge 如何解耦。
+- 网络沙箱、workspace 沙箱、run 目录和 audit log 如何保证可控。
+- quick/deep 模式如何在成本、速度和效果之间取舍。
 
 ## 9. 简历写法
 
@@ -3829,6 +4095,10 @@ Mini-Agent Runtime 与事件脉络研究工作流
 
 面向复杂工程任务和信息分析任务，传统单轮 LLM 问答缺少工具调用闭环、上下文管理、安全边界、证据追踪和可评测能力。项目基于 Mini-Agent 构建轻量级 Agent Runtime，支持多轮 LLM 工具调用、Provider 协议适配、MCP/Skills 扩展、记忆系统和执行日志；并在此基础上实现 `event_trace` 事件脉络研究工作流，用于自动规划检索、抓取来源、抽取证据、构建时间线、多源验证并生成带引用报告。
 
+更适合 Agent 岗位的项目背景可以写成：
+
+> 面向在线 AI 助手在热点事件追踪和深度研究场景中的能力不足，设计一套 Agent 化研究工作流。系统将开放式事件分析任务拆解为规划、检索、抓取、证据抽取、事件聚合、引用校验、反思补检和报告生成等阶段，重点解决传统 LLM 单轮回答缺少实时信息、证据链和可追溯性的不足。
+
 ### 主要工作
 
 - 设计 Agent Runtime 主循环，支持 LLM 多轮推理、工具调用解析、工具执行、结果回填、最大步数控制、取消清理、执行日志和 token usage 跟踪。
@@ -3838,7 +4108,9 @@ Mini-Agent Runtime 与事件脉络研究工作流
 - 将事件脉络能力封装为主 Agent 可调用的 `event_trace` 高阶工具，并增加事件脉络 / 时间线 / 证据链请求的自动路由，避免模型绕过专用工作流直接做普通搜索总结。
 - 基于 LangGraph 风格状态机实现 `EventTraceAgent`，编排 Planner、SourceSearch、PageFetch、EvidenceExtract、EventCluster、TimelineBuilder、CrossValidator、ReportWriter 等节点。
 - 设计 LLM Planner + 规则兜底机制，生成检索 query、来源策略、证据要求和验证规则；对 LLM 输出做 schema 校验，失败时回退规则抽取和规则判断。
+- 设计多模型路由策略，支持 Planner、Evidence Extractor、Citation Judge、Reflector 使用不同模型；quick 模式走规则兜底，deep 模式启用多模型增强。
 - 实现结构化证据模型，保存 `event_time`、`actor`、`claim`、`source_url`、`quote`、`confidence`、`validation_status`，支持事件聚类、引用忠实度判断、冲突检测和多源交叉验证。
+- 抽象 SearchProvider，支持 AnySearch / Tavily 可插拔和 fallback，降低单一搜索服务召回不稳定对整体链路的影响。
 - 增强安全与可观测性：实现网络沙箱、workspace 输出路径沙箱、页面大小限制、页面缓存、run 目录、`state.json`、`report.md`、`audit.jsonl` 和节点级运行记录；兼容代理 fake-ip 场景，同时继续拦截直接内网/保留地址访问。
 - 构建 `trace-eval` 评测入口和封闭集 Eval Harness，支持本地 sources 回放，评估 `citation_coverage`、`unsupported_claim_rate`、`required_event_recall`、时间线顺序和引用忠实度等指标。
 
@@ -3850,6 +4122,87 @@ Mini-Agent Runtime 与事件脉络研究工作流
 - 通过 LLM + 规则兜底的混合设计，在保留语义理解能力的同时提升系统稳定性、可测试性和失败可恢复性。
 - 通过网络沙箱、workspace 沙箱、运行目录和 audit 日志，让 Agent 的外部访问、文件输出和研究过程具备明确边界。
 - 通过 Eval Harness 和固定样本回归，把 Agent 输出从“看起来合理”转为可用指标持续评估。
+- 将开放式事件研究任务拆解为可观测、可回退、可评测的 Agent 工作流，为后续优化搜索源、网页解析、模型路由和评测集提供工程基础。
+
+### 针对当前简历描述的优化方案
+
+当前版本可以作为项目经历，但还需要从“功能罗列”优化成“问题 -> 架构设计 -> 关键难点 -> 结果”的表达。尤其是“优化 Planner、Tool Selection、Reflector”“提升用户体验”这类句子，要尽量补上具体机制和可验证产出，否则面试官会追问“具体怎么优化、怎么证明有效”。
+
+#### 1. 项目定位优化
+
+建议把项目定位从“热点事件分析系统”升级为：
+
+> 面向在线 AI 助手实时事件追踪和深度研究场景的 Agent Runtime + LangGraph 事件研究工作流。
+
+这样可以同时突出两层能力：
+
+- 底层是通用 Agent 执行框架，解决多轮推理、工具调用、记忆、长任务、日志和可观测性。
+- 上层是垂直场景工作流，解决热点事件检索、证据聚合、脉络分析、反思校验和带引用报告生成。
+
+#### 2. 简历条目改写版本
+
+```text
+Agent 执行框架与热点事件分析系统    独立开发    2026.04 - 至今
+
+项目背景：在线 AI 助手在实时事件追踪和深度研究场景中，容易受限于静态知识、单轮问答和缺少证据追踪，难以稳定完成长链路信息分析任务。
+
+主要工作：
+- 设计并实现轻量级 Agent 执行框架，支持 LLM 多轮推理、工具调用解析、工具结果回填、长任务步数控制和执行日志追踪，提升复杂任务的可控性与可观测性。
+- 基于 LangGraph 编排热点事件分析工作流，将事件研究拆解为事件发现、查询规划、信息检索、网页解析、证据抽取、事件聚合、脉络梳理、反思校验和报告生成等节点。
+- 设计 Planner、Tool Selection、Reflector 模块：Planner 负责生成检索计划和阶段目标，Tool Selection 根据任务阶段选择搜索/网页解析/记忆读写等工具，Reflector 对证据完整性、时间线一致性和来源可靠性进行自检并触发补充检索。
+- 构建结构化证据与引用生成机制，为关键结论绑定 source_url、quote、event_time、actor、confidence 等字段，降低无来源结论和事实幻觉风险。
+- 接入记忆系统与全链路执行日志，支持任务过程复盘、失败定位、多轮上下文继承和长任务恢复分析。
+
+项目收益：
+- 打通从用户问题到带引用事件报告的 Agent 化工作流，提升在线 AI 助手在实时事件理解、复杂问题处理和深度研究场景下的可用性。
+- 将事件分析过程从一次性问答升级为可追踪、可复盘、可扩展的工作流，为后续接入评测指标和多源验证提供基础。
+```
+
+#### 3. 更适合一页简历的压缩版
+
+```text
+Agent 执行框架与热点事件分析系统    独立开发    2026.04 - 至今
+- 面向在线 AI 助手实时事件追踪与深度研究场景，设计轻量级 Agent Runtime，支持 LLM 多轮推理、工具调用、长任务控制、记忆管理和执行日志追踪。
+- 基于 LangGraph 编排事件分析工作流，将任务拆解为事件发现、查询规划、信息检索、证据抽取、事件聚合、脉络梳理、反思校验和带引用报告生成。
+- 优化 Planner、Tool Selection、Reflector 模块，根据任务阶段动态选择搜索、网页解析、记忆读写等工具，并对证据完整性、时间线一致性和来源可靠性进行自检。
+- 构建结构化证据与引用机制，为关键结论绑定来源链接、原文片段、事件时间和置信度，降低事实幻觉风险，提升报告可信度。
+- 接入记忆系统和全链路执行日志，支持任务复盘、失败定位和多轮上下文继承，提升长任务执行稳定性。
+```
+
+#### 4. 如果能补充指标，优先补这些
+
+当前“项目收益”还偏定性。面试前最好补 2 到 4 个工程指标，哪怕是离线评测或自测数据：
+
+- 任务规模：支持多少类工具、多少个工作流节点、单次任务最多执行多少轮。
+- 报告质量：引用覆盖率、无来源结论比例、关键事件召回率、时间线顺序准确率。
+- 执行稳定性：长任务成功率、失败重试后恢复率、平均工具调用次数。
+- 效率收益：人工整理事件报告耗时从多久降到多久，或自动生成报告耗时。
+
+可以写成：
+
+```text
+- 在自建热点事件样本集上评估 citation_coverage、unsupported_claim_rate 和 required_event_recall 等指标，用于持续优化事件报告的引用覆盖和事实可靠性。
+- 支持 N 类工具和 N 个 LangGraph 工作流节点，单次任务可完成多轮检索、解析、反思和报告生成。
+```
+
+如果没有真实线上数据，不要硬写“用户满意度提升 xx%”。可以改成“提升可用性与可观测性”“为线上用户体验优化提供基础”。
+
+如果实际效果还不稳定，可以在简历里主动弱化结果承诺，强调工程闭环：
+
+```text
+- 针对搜索召回不稳定、网页抓取噪声和 LLM 事实幻觉问题，设计 SearchProvider fallback、结构化 evidence、引用校验和 Reflector 补检机制，提升事件研究链路的可控性与可诊断性。
+- 将开放式事件研究任务拆解为可观测、可回退、可评测的 Agent 工作流，支持搜索失败、模型输出不合法和引用不足等场景的兜底处理。
+```
+
+#### 5. 面试官可能追问的点
+
+- Planner 怎么做：说明输入是用户问题、当前事件状态和已有证据，输出是检索 query、信息缺口、目标来源类型和下一步节点。
+- Tool Selection 怎么做：说明按任务阶段和上下文状态选择工具，比如事件发现阶段偏搜索，证据补全阶段偏网页解析，复盘阶段偏日志/记忆。
+- Reflector 怎么做：说明检查证据是否支持结论、时间线是否冲突、关键节点是否缺来源；不满足时返回补充检索请求。
+- 引用怎么保证可靠：说明报告不直接引用模型记忆，而是从结构化 evidence 中取 source_url 和 quote，关键结论必须能回溯到来源。
+- LangGraph 为什么适合：说明事件研究是多阶段、状态可传递、需要分支和回退的任务，比普通线性 Agent loop 更适合显式状态图。
+- 记忆系统放什么：说明记忆保存用户偏好、历史任务结论、项目上下文和阶段性决策，不保存整段日志；召回时按当前任务相关性注入。
+- 效果不稳定怎么办：说明当前不是生产级 Deep Research，而是可迭代框架；通过节点日志、fallback、评测指标和封闭集样本持续定位问题。
 
 ### 简历精简版
 

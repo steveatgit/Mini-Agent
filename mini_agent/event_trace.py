@@ -8,6 +8,7 @@ import ipaddress
 import json
 import re
 import socket
+import sys
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -195,6 +196,29 @@ class CitationJudgmentPayload(BaseModel):
         return str(value).strip()[:300]
 
 
+class ReflectionPayload(BaseModel):
+    """Validated LLM payload for reflection-driven follow-up search."""
+
+    should_search: bool = False
+    search_queries: list[str] = Field(default_factory=list, max_length=5)
+    reason: str = ""
+
+    @field_validator("search_queries")
+    @classmethod
+    def clean_queries(cls, value: list[str]) -> list[str]:
+        cleaned = []
+        for item in value:
+            query = str(item).strip()
+            if query:
+                cleaned.append(query[:180])
+        return list(dict.fromkeys(cleaned))[:5]
+
+    @field_validator("reason")
+    @classmethod
+    def clean_reflection_reason(cls, value: str) -> str:
+        return str(value).strip()[:300]
+
+
 class EventTraceState(TypedDict, total=False):
     """Graph state for event tracing."""
 
@@ -213,6 +237,9 @@ class EventTraceState(TypedDict, total=False):
     report: str
     search_round: int
     weak_evidence_count: int
+    next_query: str
+    reflect_search: bool
+    last_search_provider: str
     run_id: str
 
 
@@ -370,13 +397,38 @@ class EventTraceMemory:
 class EventTraceRunRecorder:
     """Persist event trace run state and audit records."""
 
-    def __init__(self, run_dir: str | Path, run_id: str | None = None):
+    NODE_LABELS = {
+        "query_planner": "查询规划",
+        "source_search": "来源搜索",
+        "page_fetch": "页面抓取",
+        "evidence_extract": "证据抽取",
+        "event_cluster": "事件聚合",
+        "timeline_builder": "时间线生成",
+        "cross_validator": "交叉验证",
+        "reflector": "反思补检",
+        "report_writer": "报告生成",
+    }
+
+    def __init__(self, run_dir: str | Path, run_id: str | None = None, show_progress: bool = False):
         self.run_dir = Path(run_dir).expanduser()
         self.run_id = run_id or self.run_dir.name
+        self.show_progress = show_progress
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.audit_file = self.run_dir / "audit.jsonl"
         self.state_file = self.run_dir / "state.json"
         self.report_file = self.run_dir / "report.md"
+
+    def record_node_start(self, node: str, state: EventTraceState) -> None:
+        if not self.show_progress:
+            return
+        label = self.NODE_LABELS.get(node, node)
+        detail = self._progress_detail(node, state)
+        suffix = f" {detail}" if detail else ""
+        print(f"[event_trace] 开始：{label}{suffix}", file=sys.stderr, flush=True)
+
+    def record_info(self, message: str) -> None:
+        if self.show_progress:
+            print(f"[event_trace] {message}", file=sys.stderr, flush=True)
 
     def record_node(self, node: str, state: EventTraceState, started_at: float, error: str | None = None) -> None:
         elapsed_ms = int((time.perf_counter() - started_at) * 1000)
@@ -391,6 +443,8 @@ class EventTraceRunRecorder:
         with self.audit_file.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
         self.write_state(state)
+        if self.show_progress:
+            self._print_node_done(node, state, elapsed_ms, error)
 
     def write_state(self, state: EventTraceState) -> None:
         self.state_file.write_text(json.dumps(state_to_jsonable(state), ensure_ascii=False, indent=2), encoding="utf-8")
@@ -408,6 +462,37 @@ class EventTraceRunRecorder:
             "timeline": len(state.get("timeline", [])),
             "validation_notes": len(state.get("validation_notes", [])),
         }
+
+    def _print_node_done(self, node: str, state: EventTraceState, elapsed_ms: int, error: str | None) -> None:
+        label = self.NODE_LABELS.get(node, node)
+        counts = self._counts(state)
+        status = "失败" if error else "完成"
+        summary = (
+            f"queries={counts['queries']} sources={counts['sources']} pages={counts['pages']} "
+            f"evidence={counts['evidences']} events={counts['event_clusters']} "
+            f"timeline={counts['timeline']} weak={state.get('weak_evidence_count', 0)}"
+        )
+        if node == "source_search" and state.get("last_search_provider"):
+            summary = f"{summary} provider={state['last_search_provider']}"
+        if error:
+            summary = f"{summary} error={error}"
+        print(f"[event_trace] {status}：{label} {summary} elapsed={elapsed_ms}ms", file=sys.stderr, flush=True)
+
+    def _progress_detail(self, node: str, state: EventTraceState) -> str:
+        if node == "source_search":
+            queries = state.get("queries", [])
+            search_round = state.get("search_round", 0)
+            query = state.get("next_query") or (queries[min(search_round, len(queries) - 1)] if queries else state.get("topic", ""))
+            return f"round={search_round + 1} query={query[:120]}"
+        if node == "page_fetch":
+            fetched = {page.url for page in state.get("pages", [])}
+            pending = len([source for source in state.get("candidate_sources", []) if source.url not in fetched])
+            return f"pending_pages={pending}"
+        if node == "evidence_extract":
+            return f"pages={len(state.get('pages', []))}"
+        if node == "reflector":
+            return f"weak={state.get('weak_evidence_count', 0)}"
+        return ""
 
 
 class ResponsibleTaskPlanner:
@@ -595,6 +680,7 @@ class TavilySearchProvider:
         self.api_key = api_key
         self.endpoint = endpoint
         self.timeout = timeout
+        self.provider_name = "tavily"
 
     async def __call__(self, query: str, max_results: int) -> list[Source]:
         if not self.api_key:
@@ -609,7 +695,7 @@ class TavilySearchProvider:
                 response = await client.post(self.endpoint, json=payload)
                 response.raise_for_status()
                 data = response.json()
-        except httpx.HTTPError:
+        except (httpx.HTTPError, ValueError):
             return []
 
         sources = []
@@ -624,6 +710,119 @@ class TavilySearchProvider:
                 )
             )
         return [source for source in sources if source.url]
+
+
+class AnySearchSearchProvider:
+    """AnySearch-backed search provider used by the event trace workflow."""
+
+    def __init__(self, api_key: str = "", endpoint: str = "https://api.anysearch.com/mcp", timeout: float = 20.0):
+        self.api_key = api_key
+        self.endpoint = endpoint
+        self.timeout = timeout
+        self.provider_name = "anysearch"
+
+    async def __call__(self, query: str, max_results: int) -> list[Source]:
+        arguments = {"query": query, "max_results": max(1, min(max_results, 10))}
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "search", "arguments": arguments},
+        }
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
+                response = await client.post(self.endpoint, json=payload, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+        except httpx.HTTPError:
+            return []
+
+        if data.get("error"):
+            return []
+        return self._parse_sources(data)
+
+    def _parse_sources(self, data: Any) -> list[Source]:
+        raw_items = self._extract_items(data)
+        sources = []
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("url") or item.get("link") or item.get("href") or "").strip()
+            if not url:
+                continue
+            sources.append(
+                Source(
+                    url=url,
+                    title=str(item.get("title") or item.get("name") or ""),
+                    snippet=str(item.get("snippet") or item.get("content") or item.get("description") or ""),
+                    source_type="web",
+                    relevance=float(item.get("score") or item.get("relevance") or 0),
+                )
+            )
+        return sources
+
+    def _extract_items(self, data: Any) -> list[Any]:
+        parsed = self._extract_jsonrpc_text(data)
+        if parsed is not None:
+            data = parsed
+        if isinstance(data, list):
+            return data
+        if not isinstance(data, dict):
+            return []
+        for key in ("results", "items", "sources", "data"):
+            value = data.get(key)
+            if isinstance(value, list):
+                return value
+            if isinstance(value, dict):
+                nested = self._extract_items(value)
+                if nested:
+                    return nested
+        result = data.get("result")
+        if isinstance(result, (dict, list)):
+            return self._extract_items(result)
+        return []
+
+    def _extract_jsonrpc_text(self, data: Any) -> Any | None:
+        if not isinstance(data, dict):
+            return None
+        content = data.get("result", {}).get("content", []) if isinstance(data.get("result"), dict) else []
+        for item in content:
+            if not isinstance(item, dict) or item.get("type") != "text":
+                continue
+            text = item.get("text", "")
+            if not isinstance(text, str) or not text.strip():
+                continue
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                return None
+        return None
+
+
+class FallbackSearchProvider:
+    """Try a primary search provider, then fallback when no sources are returned."""
+
+    def __init__(self, primary: SearchProvider, fallback: SearchProvider | None = None):
+        self.primary = primary
+        self.fallback = fallback
+        primary_name = getattr(primary, "provider_name", primary.__class__.__name__)
+        fallback_name = getattr(fallback, "provider_name", fallback.__class__.__name__) if fallback else ""
+        self.provider_name = f"{primary_name} -> {fallback_name}" if fallback_name else primary_name
+
+    async def __call__(self, query: str, max_results: int) -> list[Source]:
+        try:
+            self.last_provider_name = getattr(self.primary, "provider_name", self.primary.__class__.__name__)
+            sources = await self.primary(query, max_results)
+        except Exception:
+            sources = []
+        if sources or self.fallback is None:
+            return sources
+        self.last_provider_name = getattr(self.fallback, "provider_name", self.fallback.__class__.__name__)
+        return await self.fallback(query, max_results)
 
 
 class NetworkPolicy:
@@ -896,6 +1095,57 @@ Claim: {evidence.claim}
         return CitationJudgment(status=payload.status, reason=payload.reason)
 
 
+class Reflector:
+    """Reflect on weak evidence and produce targeted follow-up searches."""
+
+    def __init__(self, llm_client: LLMClient | None = None):
+        self.llm_client = llm_client
+
+    async def reflect(self, state: EventTraceState) -> ReflectionPayload | None:
+        if not self.llm_client:
+            return None
+
+        weak_notes = [note for note in state.get("validation_notes", []) if note.status != "supported"]
+        if not weak_notes and state.get("evidences"):
+            return None
+
+        task_plan = state.get("task_plan")
+        existing_queries = state.get("queries", [])
+        sources = state.get("candidate_sources", [])
+        timeline = state.get("timeline", [])
+        prompt = f"""
+You are the reflector in an event-trace research workflow.
+Decide whether one more targeted search would materially improve the report.
+Return only JSON with keys:
+should_search, search_queries, reason.
+
+Rules:
+- Set should_search=false when the remaining gaps are unlikely to be fixed by web search.
+- Search queries must be concrete and not duplicate existing queries.
+- Prefer official statements, primary sources, regulator/court records, and reputable media.
+- Do not ask for private sources or internal networks.
+- Keep at most 5 search queries.
+
+Topic: {state.get("topic", "")}
+Research depth: {state.get("research_depth", "quick")}
+Existing queries: {json.dumps(existing_queries, ensure_ascii=False)}
+Source URLs: {json.dumps([source.url for source in sources[:12]], ensure_ascii=False)}
+Task required questions: {json.dumps(task_plan.required_questions if task_plan else [], ensure_ascii=False)}
+Timeline: {json.dumps([asdict(item) for item in timeline[:12]], ensure_ascii=False)}
+Weak validation notes: {json.dumps([asdict(note) for note in weak_notes[:12]], ensure_ascii=False)}
+""".strip()
+
+        try:
+            response = await self.llm_client.generate([Message(role="user", content=prompt)])
+            data = _json_object_from_text(response.content)
+            if not data:
+                return None
+            payload = ReflectionPayload.model_validate(data)
+        except Exception:
+            return None
+        return payload
+
+
 class ConflictDetector:
     """Detect simple source conflicts within an event cluster."""
 
@@ -933,6 +1183,7 @@ class EventTraceAgent:
         evidence_extractor: EvidenceExtractor | None = None,
         task_planner: ResponsibleTaskPlanner | None = None,
         citation_judge: CitationJudge | None = None,
+        reflector: Reflector | None = None,
         conflict_detector: ConflictDetector | None = None,
         run_recorder: EventTraceRunRecorder | None = None,
         memory: EventTraceMemory | None = None,
@@ -959,6 +1210,7 @@ class EventTraceAgent:
             focus=self.focus,
         )
         self.citation_judge = citation_judge or CitationJudge()
+        self.reflector = reflector or Reflector()
         self.conflict_detector = conflict_detector or ConflictDetector()
         self.run_recorder = run_recorder
         self.initial_sources = initial_sources or []
@@ -989,6 +1241,9 @@ class EventTraceAgent:
             "report": "",
             "search_round": 0,
             "weak_evidence_count": 0,
+            "next_query": "",
+            "reflect_search": False,
+            "last_search_provider": "",
             "run_id": self.run_recorder.run_id if self.run_recorder else "",
         }
         if self.use_langgraph:
@@ -1011,6 +1266,7 @@ class EventTraceAgent:
         graph.add_node("event_cluster", self._recorded_node("event_cluster", self.event_cluster))
         graph.add_node("timeline_builder", self._recorded_node("timeline_builder", self.timeline_builder))
         graph.add_node("cross_validator", self._recorded_node("cross_validator", self.cross_validator))
+        graph.add_node("reflector", self._recorded_node("reflector", self.reflect))
         graph.add_node("report_writer", self._recorded_node("report_writer", self.report_writer))
 
         graph.set_entry_point("query_planner")
@@ -1020,11 +1276,8 @@ class EventTraceAgent:
         graph.add_edge("evidence_extract", "event_cluster")
         graph.add_edge("event_cluster", "timeline_builder")
         graph.add_edge("timeline_builder", "cross_validator")
-        graph.add_conditional_edges(
-            "cross_validator",
-            self._validation_route,
-            {"search": "source_search", "write": "report_writer"},
-        )
+        graph.add_edge("cross_validator", "reflector")
+        graph.add_conditional_edges("reflector", self._validation_route, {"search": "source_search", "write": "report_writer"})
         graph.add_edge("report_writer", END)
         return graph.compile()
 
@@ -1037,6 +1290,7 @@ class EventTraceAgent:
             state = await self._run_recorded("event_cluster", self.event_cluster, state)
             state = await self._run_recorded("timeline_builder", self.timeline_builder, state)
             state = await self._run_recorded("cross_validator", self.cross_validator, state)
+            state = await self._run_recorded("reflector", self.reflect, state)
             if self._validation_route(state) != "search":
                 break
         return await self._run_recorded("report_writer", self.report_writer, state)
@@ -1054,6 +1308,8 @@ class EventTraceAgent:
         state: EventTraceState,
     ) -> EventTraceState:
         started_at = time.perf_counter()
+        if self.run_recorder:
+            self.run_recorder.record_node_start(node_name, state)
         try:
             next_state = await fn(state)
         except Exception as exc:
@@ -1078,14 +1334,26 @@ class EventTraceAgent:
         sources = list(state.get("candidate_sources", []))
         search_round = state.get("search_round", 0)
         queries = state.get("queries", [])
-        query = queries[min(search_round, len(queries) - 1)] if queries else state["topic"]
+        next_query = state.pop("next_query", "")
+        query = next_query or (queries[min(search_round, len(queries) - 1)] if queries else state["topic"])
+        state["reflect_search"] = False
         remaining = max(0, self.max_sources - len(sources))
 
         if remaining:
             try:
                 found = await self.search_provider(query, remaining)
+                state["last_search_provider"] = getattr(
+                    self.search_provider,
+                    "last_provider_name",
+                    getattr(self.search_provider, "provider_name", self.search_provider.__class__.__name__),
+                )
             except Exception as exc:
                 found = []
+                state["last_search_provider"] = getattr(
+                    self.search_provider,
+                    "provider_name",
+                    self.search_provider.__class__.__name__,
+                )
                 state.setdefault("validation_notes", []).append(
                     ValidationNote(
                         target=query[:120],
@@ -1235,11 +1503,38 @@ class EventTraceAgent:
             self.memory.append_evidences(state["topic"], state.get("evidences", []))
         return state
 
+    async def reflect(self, state: EventTraceState) -> EventTraceState:
+        state["reflect_search"] = False
+        reflection = await self.reflector.reflect(state)
+        if reflection is None:
+            return state
+
+        notes = state.get("validation_notes", [])
+        if reflection.reason:
+            notes.append(
+                ValidationNote(
+                    target="reflector",
+                    status="warning" if reflection.should_search else "supported",
+                    message=reflection.reason,
+                )
+            )
+        if reflection.should_search and reflection.search_queries:
+            existing = set(state.get("queries", []))
+            new_queries = [query for query in reflection.search_queries if query not in existing]
+            if new_queries:
+                state["queries"] = state.get("queries", []) + new_queries
+                state["next_query"] = new_queries[0]
+                state["reflect_search"] = True
+        state["validation_notes"] = notes
+        return state
+
     def _validation_route(self, state: EventTraceState) -> str:
         has_no_sources = not state.get("candidate_sources")
         has_no_evidence = not state.get("evidences")
         can_search_more = state.get("search_round", 0) < self.max_search_rounds
         if can_search_more and (has_no_sources or has_no_evidence):
+            return "search"
+        if can_search_more and state.get("reflect_search"):
             return "search"
         return "write"
 

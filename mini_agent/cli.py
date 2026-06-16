@@ -41,10 +41,12 @@ from mini_agent.event_trace import (
     EventTraceMemory,
     EventTraceRunRecorder,
     LLMEvidenceExtractor,
+    Reflector,
     ResponsibleTaskPlanner,
     Source,
 )
-from mini_agent.event_trace_runner import execute_event_trace, resolve_workspace_output_path, source_from_arg
+from mini_agent.event_trace_runner import create_trace_llm_client, execute_event_trace, resolve_workspace_output_path, source_from_arg
+from mini_agent.maintainer import run_maintainer
 from mini_agent.schema import LLMProvider
 from mini_agent.tools.base import Tool
 from mini_agent.tools.bash_tool import BashKillTool, BashOutputTool, BashTool
@@ -395,6 +397,12 @@ Examples:
         help="Optional research focus area. Can be provided multiple times.",
     )
     trace_parser.add_argument(
+        "--search-provider",
+        choices=["tavily", "anysearch", "auto"],
+        default=None,
+        help="Search provider for event trace when sources are not supplied. Defaults to config tools.web_search.provider.",
+    )
+    trace_parser.add_argument(
         "--no-memory",
         action="store_true",
         help="Disable event evidence memory for this run",
@@ -413,6 +421,11 @@ Examples:
         "--llm-judge",
         action="store_true",
         help="Use the configured LLM to judge whether quotes support claims, with rule-based fallback",
+    )
+    trace_parser.add_argument(
+        "--llm-reflect",
+        action="store_true",
+        help="Use the configured LLM to reflect on evidence gaps and trigger targeted follow-up search",
     )
 
     trace_eval_parser = subparsers.add_parser("trace-eval", help="Run a closed-set event trace eval case")
@@ -437,6 +450,38 @@ Examples:
         "--llm-judge",
         action="store_true",
         help="Use the configured LLM for citation judging",
+    )
+    trace_eval_parser.add_argument(
+        "--llm-reflect",
+        action="store_true",
+        help="Use the configured LLM for reflection",
+    )
+
+    maintain_parser = subparsers.add_parser("maintain", help="Run an OSS maintainer issue-to-patch workflow")
+    maintain_parser.add_argument("--repo", required=True, help="Path to the local git repository to maintain")
+    maintain_parser.add_argument("--issue-file", required=True, help="Path to a Markdown/text file containing the issue")
+    maintain_parser.add_argument(
+        "--test",
+        dest="test_command",
+        default=None,
+        help="Verification command to run inside the repository. If omitted, Mini-Agent tries to infer one.",
+    )
+    maintain_parser.add_argument(
+        "--constraint",
+        action="append",
+        default=[],
+        help="Optional implementation constraint. Can be provided multiple times.",
+    )
+    maintain_parser.add_argument(
+        "--run-id",
+        default=None,
+        help="Optional run id for artifacts/runs/<run-id>.",
+    )
+    maintain_parser.add_argument(
+        "--verification-timeout",
+        type=int,
+        default=120,
+        help="Timeout in seconds for the verification command.",
     )
 
     return parser.parse_args()
@@ -1006,13 +1051,8 @@ def _create_trace_llm_client(config: Config | None, feature_name: str) -> LLMCli
     if config is None:
         print(f"{Colors.YELLOW}⚠️  {feature_name} requested but no config was loaded; using rule-based fallback{Colors.RESET}")
         return None
-    provider = LLMProvider.ANTHROPIC if config.llm.provider.lower() == "anthropic" else LLMProvider.OPENAI
-    return LLMClient(
-        api_key=config.llm.api_key,
-        provider=provider,
-        api_base=config.llm.api_base,
-        model=config.llm.model,
-    )
+    role = feature_name.removeprefix("--llm-")
+    return create_trace_llm_client(config, role)
 
 
 def _create_trace_llm_extractor(config: Config | None) -> LLMEvidenceExtractor | None:
@@ -1042,8 +1082,13 @@ async def run_event_trace(args: argparse.Namespace, workspace_dir: Path) -> None
 
     config = _load_config_optional()
 
-    if not args.source and not (config.tools.web_search.api_key if config else os.environ.get("TAVILY_API_KEY", "")):
+    selected_provider = args.search_provider or (config.tools.web_search.provider if config else "tavily")
+    tavily_key = config.tools.web_search.api_key if config else os.environ.get("TAVILY_API_KEY", "")
+    anysearch_key = config.tools.web_search.anysearch_api_key if config else os.environ.get("ANYSEARCH_API_KEY", "")
+    if not args.source and selected_provider == "tavily" and not tavily_key:
         print(f"{Colors.YELLOW}⚠️  No --source provided and no TAVILY_API_KEY configured. The report may be empty.{Colors.RESET}")
+    if not args.source and selected_provider == "anysearch" and not anysearch_key:
+        print(f"{Colors.YELLOW}⚠️  ANYSEARCH_API_KEY is not configured. Anonymous AnySearch access will be attempted.{Colors.RESET}")
 
     print(f"{Colors.BRIGHT_CYAN}Running event trace workflow...{Colors.RESET}")
     print(f"{Colors.DIM}Topic: {args.topic}{Colors.RESET}")
@@ -1060,8 +1105,10 @@ async def run_event_trace(args: argparse.Namespace, workspace_dir: Path) -> None
         llm_plan=args.llm_plan,
         llm_extract=args.llm_extract,
         llm_judge=args.llm_judge,
+        llm_reflect=args.llm_reflect,
         output=args.output,
         json_output=args.json_output,
+        search_provider=args.search_provider,
     )
     report = state.get("report", "")
     print(f"{Colors.DIM}Run directory: {result.run_dir}{Colors.RESET}")
@@ -1089,8 +1136,10 @@ async def run_event_trace_eval(args: argparse.Namespace, workspace_dir: Path) ->
     extractor = _create_trace_llm_extractor(config) if args.llm_extract else None
     planner_llm_client = _create_trace_llm_client(config, "--llm-plan") if args.llm_plan else None
     judge_llm_client = _create_trace_llm_client(config, "--llm-judge") if args.llm_judge else None
+    reflector_llm_client = _create_trace_llm_client(config, "--llm-reflect") if getattr(args, "llm_reflect", False) else None
     task_planner = ResponsibleTaskPlanner(memory=memory, llm_client=planner_llm_client)
     citation_judge = CitationJudge(llm_client=judge_llm_client)
+    reflector = Reflector(llm_client=reflector_llm_client)
 
     run_id = datetime.utcnow().strftime("eval-%Y%m%dT%H%M%SZ")
     run_recorder = EventTraceRunRecorder(workspace_dir / ".event_trace" / "evals" / run_id, run_id=run_id)
@@ -1101,6 +1150,7 @@ async def run_event_trace_eval(args: argparse.Namespace, workspace_dir: Path) ->
         evidence_extractor=extractor,
         task_planner=task_planner,
         citation_judge=citation_judge,
+        reflector=reflector,
         run_recorder=run_recorder,
         memory=memory,
         initial_sources=[_source_from_arg(source) for source in case.sources],
@@ -1121,6 +1171,29 @@ async def run_event_trace_eval(args: argparse.Namespace, workspace_dir: Path) ->
         print(f"{Colors.GREEN}✅ Wrote eval result: {output_path}{Colors.RESET}")
     else:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def run_maintainer_cli(args: argparse.Namespace, workspace_dir: Path) -> None:
+    """Run the local OSS maintainer workflow."""
+
+    issue_file = Path(args.issue_file).expanduser()
+    if not issue_file.is_absolute():
+        issue_file = Path.cwd() / issue_file
+    issue_text = issue_file.read_text(encoding="utf-8")
+    result = run_maintainer(
+        repo_path=args.repo,
+        issue_text=issue_text,
+        test_command=args.test_command,
+        workspace_dir=workspace_dir,
+        run_id=args.run_id,
+        constraints=args.constraint,
+        verification_timeout=args.verification_timeout,
+    )
+    print(f"{Colors.GREEN}✅ Maintainer run complete{Colors.RESET}")
+    print(f"{Colors.DIM}Status: {result.status}{Colors.RESET}")
+    print(f"{Colors.DIM}Run directory: {result.run_dir}{Colors.RESET}")
+    print(f"{Colors.DIM}Summary: {result.run_dir / 'run_summary.md'}{Colors.RESET}")
+    print(f"{Colors.DIM}Patch: {result.run_dir / 'final.patch'}{Colors.RESET}")
 
 
 def main():
@@ -1152,6 +1225,15 @@ def main():
             workspace_dir = Path.cwd()
         workspace_dir.mkdir(parents=True, exist_ok=True)
         asyncio.run(run_event_trace_eval(args, workspace_dir))
+        return
+
+    if args.command == "maintain":
+        if args.workspace:
+            workspace_dir = Path(args.workspace).expanduser().absolute()
+        else:
+            workspace_dir = Path.cwd()
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        run_maintainer_cli(args, workspace_dir)
         return
 
     # Determine workspace directory

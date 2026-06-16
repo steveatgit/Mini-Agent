@@ -126,6 +126,7 @@ class MiniMaxACPAgent:
 
     async def _run_turn(self, state: SessionState, session_id: str) -> str:
         agent = state.agent
+        await agent._maybe_auto_load_requested_skill()
         for _ in range(agent.max_steps):
             if state.cancelled:
                 return "cancelled"

@@ -87,6 +87,11 @@ class EventTraceTool(Tool):
                     "default": False,
                     "description": "Use the configured LLM to judge whether quotes support claims, with rule fallback.",
                 },
+                "llm_reflect": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Use the configured LLM to reflect on evidence gaps and trigger targeted follow-up search.",
+                },
                 "output": {
                     "type": "string",
                     "description": "Optional workspace-relative Markdown report path.",
@@ -107,6 +112,7 @@ class EventTraceTool(Tool):
         llm_plan: bool = False,
         llm_extract: bool = False,
         llm_judge: bool = False,
+        llm_reflect: bool = False,
         output: str | None = None,
     ) -> ToolResult:
         try:
@@ -123,6 +129,7 @@ class EventTraceTool(Tool):
                 llm_plan=llm_plan,
                 llm_extract=llm_extract,
                 llm_judge=llm_judge,
+                llm_reflect=llm_reflect,
                 output=output,
             )
         except Exception as exc:

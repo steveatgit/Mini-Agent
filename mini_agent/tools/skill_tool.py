@@ -22,7 +22,10 @@ class GetSkillTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Get complete content and guidance for a specified skill, used for executing specific types of tasks"
+        return (
+            "Get complete content and guidance for a specified skill. "
+            "Call this first whenever the user explicitly names a skill or a task matches an available skill."
+        )
 
     @property
     def parameters(self) -> Dict[str, Any]:
@@ -31,7 +34,7 @@ class GetSkillTool(Tool):
             "properties": {
                 "skill_name": {
                     "type": "string",
-                    "description": "Name of the skill to retrieve (use list_skills to view available skills)",
+                    "description": "Name of the skill to retrieve. Use the exact name shown in Available Skills.",
                 }
             },
             "required": ["skill_name"],

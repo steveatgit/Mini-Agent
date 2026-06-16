@@ -1,13 +1,20 @@
 """Test cases for LLM wrapper client."""
 
 import asyncio
-from pathlib import Path
 
 import pytest
-import yaml
 
+from mini_agent.config import Config
 from mini_agent.llm import LLMClient
 from mini_agent.schema import LLMProvider, Message
+
+
+def load_test_config():
+    """Load config from dev or user config directory."""
+    config_path = Config.get_default_config_path()
+    if not config_path.exists():
+        pytest.skip("config.yaml not found in dev or ~/.mini-agent/config")
+    return Config.from_yaml(config_path)
 
 
 @pytest.mark.asyncio
@@ -15,17 +22,14 @@ async def test_wrapper_anthropic_provider():
     """Test LLM wrapper with Anthropic provider."""
     print("\n=== Testing LLM Wrapper (Anthropic Provider) ===")
 
-    # Load config
-    config_path = Path("mini_agent/config/config.yaml")
-    with open(config_path, encoding="utf-8") as f:
-        config = yaml.safe_load(f)
+    config = load_test_config()
 
     # Create client with Anthropic provider
     client = LLMClient(
-        api_key=config["api_key"],
+        api_key=config.llm.api_key,
         provider=LLMProvider.ANTHROPIC,
-        api_base=config.get("api_base"),
-        model=config.get("model"),
+        api_base=config.llm.api_base,
+        model=config.llm.model,
     )
 
     assert client.provider == LLMProvider.ANTHROPIC
@@ -62,16 +66,14 @@ async def test_wrapper_openai_provider():
     """Test LLM wrapper with OpenAI provider."""
     print("\n=== Testing LLM Wrapper (OpenAI Provider) ===")
 
-    # Load config
-    config_path = Path("mini_agent/config/config.yaml")
-    with open(config_path, encoding="utf-8") as f:
-        config = yaml.safe_load(f)
+    config = load_test_config()
 
     # Create client with OpenAI provider
     client = LLMClient(
-        api_key=config["api_key"],
+        api_key=config.llm.api_key,
         provider=LLMProvider.OPENAI,
-        model=config.get("model"),
+        api_base=config.llm.api_base,
+        model=config.llm.model,
     )
 
     assert client.provider == LLMProvider.OPENAI
@@ -108,15 +110,13 @@ async def test_wrapper_default_provider():
     """Test LLM wrapper with default provider (Anthropic)."""
     print("\n=== Testing LLM Wrapper (Default Provider) ===")
 
-    # Load config
-    config_path = Path("mini_agent/config/config.yaml")
-    with open(config_path, encoding="utf-8") as f:
-        config = yaml.safe_load(f)
+    config = load_test_config()
 
     # Create client without specifying provider (should default to Anthropic)
     client = LLMClient(
-        api_key=config["api_key"],
-        model=config.get("model"),
+        api_key=config.llm.api_key,
+        api_base=config.llm.api_base,
+        model=config.llm.model,
     )
 
     assert client.provider == LLMProvider.ANTHROPIC
@@ -129,16 +129,14 @@ async def test_wrapper_tool_calling():
     """Test LLM wrapper with tool calling."""
     print("\n=== Testing LLM Wrapper Tool Calling ===")
 
-    # Load config
-    config_path = Path("mini_agent/config/config.yaml")
-    with open(config_path, encoding="utf-8") as f:
-        config = yaml.safe_load(f)
+    config = load_test_config()
 
     # Create client with Anthropic provider
     client = LLMClient(
-        api_key=config["api_key"],
+        api_key=config.llm.api_key,
         provider=LLMProvider.ANTHROPIC,
-        model=config.get("model"),
+        api_base=config.llm.api_base,
+        model=config.llm.model,
     )
 
     # Messages requesting tool use

@@ -52,14 +52,42 @@ tools:
   # Web search tool
   enable_web_search: false
   web_search:
+    # Provider used by event_trace when no --source is provided:
+    # "tavily", "anysearch", or "auto" (AnySearch when configured, else Tavily).
+    provider: "tavily"
     api_key: "${TAVILY_API_KEY}"
     endpoint: "https://api.tavily.com/search"
     timeout: 20.0
+    anysearch_api_key: "${ANYSEARCH_API_KEY}"
+    anysearch_endpoint: "https://api.anysearch.com/mcp"
+    fallback_to_tavily: true
 
   # Event trace workflow tool
   # Lets the main agent build cited event timelines and evidence reports.
-  # Uses web_search.api_key / endpoint for open-web search when no sources are provided.
+  # Uses web_search.provider for open-web search when no sources are provided.
   enable_event_trace: false
+  event_trace_models:
+    # Optional role-specific LLM routing for event_trace.
+    # Defaults target OpenRouter's OpenAI-compatible API.
+    api_key: "${OPENROUTER_API_KEY}"
+    api_base: "https://openrouter.ai/api/v1"
+    provider: "openai"
+    planner_model: "nvidia/nemotron-3-ultra-550b-a55b:free"
+    extractor_model: "qwen/qwen3-next-80b-a3b-instruct:free"
+    judge_model: "openai/gpt-oss-120b:free"
+    reflector_model: "nvidia/nemotron-3-super-120b-a12b:free"
+
+  # OSS maintainer workflow model routing
+  # Used by future model-backed issue triage, implementation, verification reflection,
+  # and PR writing nodes. The deterministic MVP runner can operate without these.
+  maintainer_models:
+    api_key: "${OPENROUTER_API_KEY}"
+    api_base: "https://openrouter.ai/api/v1"
+    provider: "openai"
+    planner_model: "openai/gpt-oss-20b:free"
+    implementer_model: "qwen/qwen3-coder:free"
+    verifier_model: "openai/gpt-oss-20b:free"
+    pr_writer_model: "openai/gpt-oss-20b:free"
 
   # Jira reader tool
   enable_jira_reader: false

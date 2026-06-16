@@ -4,6 +4,7 @@ import socket
 import pytest
 
 from mini_agent.event_trace import (
+    AnySearchSearchProvider,
     CitationJudge,
     DefaultPageFetcher,
     EventTraceAgent,
@@ -15,10 +16,13 @@ from mini_agent.event_trace import (
     LLMEvidenceExtractor,
     NetworkPolicy,
     Page,
+    Reflector,
     ResponsibleTaskPlanner,
     Source,
     state_to_jsonable,
 )
+from mini_agent.event_trace_runner import create_event_trace_search_provider, create_trace_llm_client
+from mini_agent.config import AgentConfig, Config, LLMConfig, ToolsConfig, WebSearchConfig
 from mini_agent.schema import LLMResponse
 
 
@@ -30,6 +34,80 @@ class FakePlannerLLM:
     async def generate(self, messages, tools=None):
         self.calls += 1
         return LLMResponse(content=self.content, finish_reason="stop")
+
+
+def test_anysearch_provider_parses_jsonrpc_text_results():
+    provider = AnySearchSearchProvider()
+
+    sources = provider._parse_sources(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": json.dumps(
+                            {
+                                "results": [
+                                    {
+                                        "title": "Example",
+                                        "url": "https://example.com/a",
+                                        "snippet": "Snippet",
+                                        "score": 0.9,
+                                    }
+                                ]
+                            }
+                        ),
+                    }
+                ]
+            },
+        }
+    )
+
+    assert len(sources) == 1
+    assert sources[0].url == "https://example.com/a"
+    assert sources[0].title == "Example"
+    assert sources[0].snippet == "Snippet"
+    assert sources[0].relevance == 0.9
+
+
+def test_create_event_trace_search_provider_uses_anysearch_with_tavily_fallback():
+    config = Config(
+        llm=LLMConfig(api_key="llm-key"),
+        agent=AgentConfig(),
+        tools=ToolsConfig(
+            web_search=WebSearchConfig(
+                provider="anysearch",
+                api_key="tavily-key",
+                anysearch_api_key="anysearch-key",
+                fallback_to_tavily=True,
+            )
+        ),
+    )
+
+    provider, warning, timeout = create_event_trace_search_provider(config)
+
+    assert warning is None
+    assert timeout == 20.0
+    assert provider.primary.__class__.__name__ == "AnySearchSearchProvider"
+    assert provider.fallback.__class__.__name__ == "TavilySearchProvider"
+
+
+def test_create_trace_llm_client_uses_role_specific_openrouter_model():
+    config = Config(
+        llm=LLMConfig(api_key="llm-key", model="fallback-model", provider="openai"),
+        agent=AgentConfig(),
+        tools=ToolsConfig(),
+    )
+    config.tools.event_trace_models.api_key = "openrouter-key"
+    config.tools.event_trace_models.planner_model = "nvidia/nemotron-3-ultra-550b-a55b:free"
+
+    client = create_trace_llm_client(config, "planner")
+
+    assert client.api_key == "openrouter-key"
+    assert client.model == "nvidia/nemotron-3-ultra-550b-a55b:free"
+    assert client.api_base == "https://openrouter.ai/api/v1"
 
 
 @pytest.mark.asyncio
@@ -99,6 +177,39 @@ async def test_event_trace_retries_search_when_no_evidence():
     assert calls[1][0] == "missing event timeline"
     assert state["report"]
     assert "No structured events" in state["report"]
+
+
+@pytest.mark.asyncio
+async def test_event_trace_reflector_adds_targeted_follow_up_query():
+    calls = []
+
+    async def search_provider(query: str, max_results: int):
+        calls.append((query, max_results))
+        return []
+
+    reflector_llm = FakePlannerLLM(
+        json.dumps(
+            {
+                "should_search": True,
+                "search_queries": ["missing event official statement primary source"],
+                "reason": "Need a primary source before writing.",
+            }
+        )
+    )
+    agent = EventTraceAgent(
+        topic="missing event",
+        search_provider=search_provider,
+        reflector=Reflector(llm_client=reflector_llm),
+        max_search_rounds=2,
+        use_langgraph=False,
+    )
+
+    state = await agent.run()
+
+    assert len(calls) == 2
+    assert calls[1][0] == "missing event official statement primary source"
+    assert state["reflect_search"] is False
+    assert any(note.target == "reflector" for note in state["validation_notes"])
 
 
 def test_event_trace_state_to_jsonable_handles_dataclasses(tmp_path):

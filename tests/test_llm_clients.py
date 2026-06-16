@@ -5,11 +5,10 @@ without going through the wrapper layer.
 """
 
 import asyncio
-from pathlib import Path
 
 import pytest
-import yaml
 
+from mini_agent.config import Config
 from mini_agent.llm import AnthropicClient, OpenAIClient
 from mini_agent.retry import RetryConfig
 from mini_agent.schema import Message
@@ -17,9 +16,10 @@ from mini_agent.schema import Message
 
 def load_config():
     """Load config from config.yaml."""
-    config_path = Path("mini_agent/config/config.yaml")
-    with open(config_path, encoding="utf-8") as f:
-        return yaml.safe_load(f)
+    config_path = Config.get_default_config_path()
+    if not config_path.exists():
+        pytest.skip("config.yaml not found in dev or ~/.mini-agent/config")
+    return Config.from_yaml(config_path)
 
 
 @pytest.mark.asyncio
@@ -31,9 +31,9 @@ async def test_anthropic_simple_completion():
 
     # Create Anthropic client
     client = AnthropicClient(
-        api_key=config["api_key"],
+        api_key=config.llm.api_key,
         api_base="https://api.minimaxi.com/anthropic",
-        model=config.get("model", "MiniMax-M2.5"),
+        model=config.llm.model,
         retry_config=RetryConfig(enabled=True, max_retries=2),
     )
 
@@ -72,9 +72,9 @@ async def test_openai_simple_completion():
 
     # Create OpenAI client
     client = OpenAIClient(
-        api_key=config["api_key"],
+        api_key=config.llm.api_key,
         api_base="https://api.minimaxi.com/v1",
-        model=config.get("model", "MiniMax-M2.5"),
+        model=config.llm.model,
         retry_config=RetryConfig(enabled=True, max_retries=2),
     )
 
@@ -113,9 +113,9 @@ async def test_anthropic_tool_calling():
 
     # Create Anthropic client
     client = AnthropicClient(
-        api_key=config["api_key"],
+        api_key=config.llm.api_key,
         api_base="https://api.minimaxi.com/anthropic",
-        model=config.get("model", "MiniMax-M2.5"),
+        model=config.llm.model,
     )
 
     # Define tool using dict format
@@ -173,9 +173,9 @@ async def test_openai_tool_calling():
 
     # Create OpenAI client
     client = OpenAIClient(
-        api_key=config["api_key"],
+        api_key=config.llm.api_key,
         api_base="https://api.minimaxi.com/v1",
-        model=config.get("model", "MiniMax-M2.5"),
+        model=config.llm.model,
     )
 
     # Define tool using dict format (will be converted internally for OpenAI)
@@ -233,9 +233,9 @@ async def test_multi_turn_conversation():
 
     # Test with Anthropic client
     client = AnthropicClient(
-        api_key=config["api_key"],
+        api_key=config.llm.api_key,
         api_base="https://api.minimaxi.com/anthropic",
-        model=config.get("model", "MiniMax-M2.5"),
+        model=config.llm.model,
     )
 
     # Define tool using dict format

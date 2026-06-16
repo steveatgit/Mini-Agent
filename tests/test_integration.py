@@ -27,9 +27,9 @@ async def test_basic_agent_usage():
     print("=" * 80)
 
     # Load configuration
-    config_path = Path("mini_agent/config/config.yaml")
+    config_path = Config.get_default_config_path()
     if not config_path.exists():
-        pytest.skip("config.yaml not found")
+        pytest.skip("config.yaml not found in dev or ~/.mini-agent/config")
 
     config = Config.from_yaml(config_path)
 
@@ -74,14 +74,14 @@ async def test_basic_agent_usage():
         try:
             # MCP tools are disabled by default to prevent test hangs
             # Enable specific MCP servers in mcp.json if needed
-            mcp_tools = await load_mcp_tools_async(
-                config_path="mini_agent/config/mcp.json"
-            )
-            if mcp_tools:
-                print(f"✓ Loaded {len(mcp_tools)} MCP tools")
-                tools.extend(mcp_tools)
-            else:
-                print("⚠️  No MCP tools configured (mcp.json is empty)")
+            mcp_config_path = Config.find_config_file("mcp.json")
+            if mcp_config_path:
+                mcp_tools = await load_mcp_tools_async(config_path=str(mcp_config_path))
+                if mcp_tools:
+                    print(f"✓ Loaded {len(mcp_tools)} MCP tools")
+                    tools.extend(mcp_tools)
+                else:
+                    print("⚠️  No MCP tools configured (mcp.json is empty)")
         except Exception as e:
             print(f"⚠️  MCP tools not loaded: {e}")
 
@@ -131,9 +131,9 @@ async def test_session_memory_demo():
     print("=" * 80)
 
     # Load config
-    config_path = Path("mini_agent/config/config.yaml")
+    config_path = Config.get_default_config_path()
     if not config_path.exists():
-        pytest.skip("config.yaml not found")
+        pytest.skip("config.yaml not found in dev or ~/.mini-agent/config")
 
     config = Config.from_yaml(config_path)
 

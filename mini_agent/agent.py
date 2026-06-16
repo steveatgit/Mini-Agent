@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 from pathlib import Path
 from time import perf_counter
 from typing import Optional
@@ -160,6 +161,99 @@ class Agent:
             "incident investigation",
         ]
         return any(trigger in text for trigger in triggers)
+
+    def _mentioned_skill_name(self, user_message: str | None) -> str | None:
+        """Return an available skill explicitly named by the user."""
+        if not user_message or "get_skill" not in self.tools:
+            return None
+
+        get_skill_tool = self.tools["get_skill"]
+        skill_loader = getattr(get_skill_tool, "skill_loader", None)
+        if skill_loader is None:
+            return None
+
+        try:
+            skill_names = skill_loader.list_skills()
+        except Exception:
+            return None
+
+        lowered = user_message.lower()
+        for skill_name in skill_names:
+            escaped = re.escape(skill_name.lower())
+            patterns = [
+                rf"(?:使用|用|加载|啟用|启用)\s*`?{escaped}`?\s*(?:skill|技能)?",
+                rf"(?:use|load|activate)\s+(?:the\s+)?`?{escaped}`?\s+skill",
+                rf"`?{escaped}`?\s*(?:skill|技能)",
+            ]
+            if any(re.search(pattern, lowered) for pattern in patterns):
+                return skill_name
+
+        return None
+
+    async def _maybe_auto_load_requested_skill(self) -> bool:
+        """Load an explicitly requested skill before asking the LLM to choose tools."""
+        user_message = self._latest_user_message_for_auto_route()
+        skill_name = self._mentioned_skill_name(user_message)
+        if not skill_name:
+            return False
+
+        tool = self.tools["get_skill"]
+        arguments = {"skill_name": skill_name}
+        tool_call = ToolCall(
+            id=f"auto-get-skill-{skill_name}",
+            type="function",
+            function=FunctionCall(name="get_skill", arguments=arguments),
+        )
+
+        print(f"\n{Colors.BRIGHT_YELLOW}🔧 Auto Tool Call:{Colors.RESET} {Colors.BOLD}{Colors.CYAN}get_skill{Colors.RESET}")
+        print(f"{Colors.DIM}   Reason: user explicitly requested skill '{skill_name}'{Colors.RESET}")
+
+        self.messages.append(
+            Message(
+                role="assistant",
+                content="",
+                tool_calls=[tool_call],
+            )
+        )
+
+        try:
+            result = await tool.execute(**arguments)
+        except Exception as e:
+            import traceback
+
+            error_detail = f"{type(e).__name__}: {str(e)}"
+            error_trace = traceback.format_exc()
+            result = ToolResult(
+                success=False,
+                content="",
+                error=f"Tool execution failed: {error_detail}\n\nTraceback:\n{error_trace}",
+            )
+
+        self.logger.log_tool_result(
+            tool_name="get_skill",
+            arguments=arguments,
+            result_success=result.success,
+            result_content=result.content if result.success else None,
+            result_error=result.error if not result.success else None,
+        )
+
+        if result.success:
+            result_text = result.content
+            if len(result_text) > 300:
+                result_text = result_text[:300] + f"{Colors.DIM}...{Colors.RESET}"
+            print(f"{Colors.BRIGHT_GREEN}✓ Result:{Colors.RESET} {result_text}")
+        else:
+            print(f"{Colors.BRIGHT_RED}✗ Error:{Colors.RESET} {Colors.RED}{result.error}{Colors.RESET}")
+
+        self.messages.append(
+            Message(
+                role="tool",
+                content=result.content if result.success else f"Error: {result.error}",
+                tool_call_id=tool_call.id,
+                name="get_skill",
+            )
+        )
+        return True
 
     async def _maybe_auto_run_event_trace(self) -> bool:
         """Run event_trace before the LLM when the user clearly asks for a timeline."""
@@ -443,6 +537,7 @@ Requirements:
         print(f"{Colors.DIM}📝 Log file: {self.logger.get_log_file_path()}{Colors.RESET}")
 
         await self._maybe_auto_run_event_trace()
+        await self._maybe_auto_load_requested_skill()
 
         step = 0
         run_start_time = perf_counter()

@@ -113,9 +113,37 @@ class MCPConfig(BaseModel):
 class WebSearchConfig(BaseModel):
     """Web search tool configuration."""
 
+    provider: str = "tavily"
     api_key: str = ""
     endpoint: str = "https://api.tavily.com/search"
     timeout: float = 20.0
+    anysearch_api_key: str = ""
+    anysearch_endpoint: str = "https://api.anysearch.com/mcp"
+    fallback_to_tavily: bool = True
+
+
+class EventTraceModelsConfig(BaseModel):
+    """Role-specific LLM model routing for event trace."""
+
+    api_key: str = ""
+    api_base: str = "https://openrouter.ai/api/v1"
+    provider: str = "openai"
+    planner_model: str = "nvidia/nemotron-3-ultra-550b-a55b:free"
+    extractor_model: str = "qwen/qwen3-next-80b-a3b-instruct:free"
+    judge_model: str = "openai/gpt-oss-120b:free"
+    reflector_model: str = "nvidia/nemotron-3-super-120b-a12b:free"
+
+
+class MaintainerModelsConfig(BaseModel):
+    """Role-specific LLM model routing for OSS maintainer workflows."""
+
+    api_key: str = ""
+    api_base: str = "https://openrouter.ai/api/v1"
+    provider: str = "openai"
+    planner_model: str = "openai/gpt-oss-20b:free"
+    implementer_model: str = "qwen/qwen3-coder:free"
+    verifier_model: str = "openai/gpt-oss-20b:free"
+    pr_writer_model: str = "openai/gpt-oss-20b:free"
 
 
 class JiraConfig(BaseModel):
@@ -155,6 +183,8 @@ class ToolsConfig(BaseModel):
     # External tools
     enable_web_search: bool = False
     web_search: WebSearchConfig = Field(default_factory=WebSearchConfig)
+    event_trace_models: EventTraceModelsConfig = Field(default_factory=EventTraceModelsConfig)
+    maintainer_models: MaintainerModelsConfig = Field(default_factory=MaintainerModelsConfig)
     enable_event_trace: bool = False
     enable_jira_reader: bool = False
     jira: JiraConfig = Field(default_factory=JiraConfig)
@@ -252,9 +282,35 @@ class Config(BaseModel):
 
         web_search_data = tools_data.get("web_search", {})
         web_search_config = WebSearchConfig(
+            provider=web_search_data.get("provider", "tavily"),
             api_key=web_search_data.get("api_key") or os.environ.get("TAVILY_API_KEY", ""),
             endpoint=web_search_data.get("endpoint", "https://api.tavily.com/search"),
             timeout=web_search_data.get("timeout", 20.0),
+            anysearch_api_key=web_search_data.get("anysearch_api_key") or os.environ.get("ANYSEARCH_API_KEY", ""),
+            anysearch_endpoint=web_search_data.get("anysearch_endpoint", "https://api.anysearch.com/mcp"),
+            fallback_to_tavily=web_search_data.get("fallback_to_tavily", True),
+        )
+
+        event_trace_models_data = tools_data.get("event_trace_models", {})
+        event_trace_models_config = EventTraceModelsConfig(
+            api_key=event_trace_models_data.get("api_key") or os.environ.get("OPENROUTER_API_KEY", ""),
+            api_base=event_trace_models_data.get("api_base", "https://openrouter.ai/api/v1"),
+            provider=event_trace_models_data.get("provider", "openai"),
+            planner_model=event_trace_models_data.get("planner_model", "nvidia/nemotron-3-ultra-550b-a55b:free"),
+            extractor_model=event_trace_models_data.get("extractor_model", "qwen/qwen3-next-80b-a3b-instruct:free"),
+            judge_model=event_trace_models_data.get("judge_model", "openai/gpt-oss-120b:free"),
+            reflector_model=event_trace_models_data.get("reflector_model", "nvidia/nemotron-3-super-120b-a12b:free"),
+        )
+
+        maintainer_models_data = tools_data.get("maintainer_models", {})
+        maintainer_models_config = MaintainerModelsConfig(
+            api_key=maintainer_models_data.get("api_key") or os.environ.get("OPENROUTER_API_KEY", ""),
+            api_base=maintainer_models_data.get("api_base", "https://openrouter.ai/api/v1"),
+            provider=maintainer_models_data.get("provider", "openai"),
+            planner_model=maintainer_models_data.get("planner_model", "openai/gpt-oss-20b:free"),
+            implementer_model=maintainer_models_data.get("implementer_model", "qwen/qwen3-coder:free"),
+            verifier_model=maintainer_models_data.get("verifier_model", "openai/gpt-oss-20b:free"),
+            pr_writer_model=maintainer_models_data.get("pr_writer_model", "openai/gpt-oss-20b:free"),
         )
 
         jira_data = tools_data.get("jira", {})
@@ -283,6 +339,8 @@ class Config(BaseModel):
             mcp=mcp_config,
             enable_web_search=tools_data.get("enable_web_search", False),
             web_search=web_search_config,
+            event_trace_models=event_trace_models_config,
+            maintainer_models=maintainer_models_config,
             enable_event_trace=tools_data.get("enable_event_trace", False),
             enable_jira_reader=tools_data.get("enable_jira_reader", False),
             jira=jira_config,

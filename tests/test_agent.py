@@ -11,6 +11,8 @@ from mini_agent.agent import Agent
 from mini_agent.config import Config
 from mini_agent.schema import LLMResponse, Message
 from mini_agent.tools import BashTool, EditTool, ReadTool, Tool, ToolResult, WriteTool
+from mini_agent.tools.skill_loader import SkillLoader
+from mini_agent.tools.skill_tool import GetSkillTool
 
 
 class FakeLLM:
@@ -43,6 +45,20 @@ class FakeEventTraceTool(Tool):
         return ToolResult(success=True, content='{"report_path": "trace.md"}')
 
 
+def create_test_skill(skill_dir: Path, name: str, description: str, content: str):
+    skill_file = skill_dir / "SKILL.md"
+    skill_file.write_text(
+        f"""---
+name: {name}
+description: {description}
+---
+
+{content}
+""",
+        encoding="utf-8",
+    )
+
+
 @pytest.mark.asyncio
 async def test_agent_auto_routes_event_timeline_to_event_trace(tmp_path):
     llm = FakeLLM()
@@ -65,12 +81,43 @@ async def test_agent_auto_routes_event_timeline_to_event_trace(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_agent_auto_loads_explicitly_requested_skill(tmp_path):
+    skill_dir = tmp_path / "skills" / "anysearch"
+    skill_dir.mkdir(parents=True)
+    create_test_skill(
+        skill_dir,
+        "anysearch",
+        "Real-time search engine.",
+        "Use the AnySearch CLI for web search.",
+    )
+    loader = SkillLoader(str(tmp_path / "skills"))
+    loader.discover_skills()
+
+    llm = FakeLLM()
+    agent = Agent(
+        llm_client=llm,
+        system_prompt="system",
+        tools=[GetSkillTool(loader)],
+        max_steps=2,
+        workspace_dir=str(tmp_path),
+    )
+
+    agent.add_user_message("使用anysearch skill搜索，openai最新进展")
+    result = await agent.run()
+
+    assert result == "event trace complete"
+    assert len(llm.messages) == 1
+    assert any(msg.role == "tool" and msg.name == "get_skill" and "AnySearch CLI" in msg.content for msg in llm.messages[0])
+
+
+@pytest.mark.asyncio
 async def test_agent_simple_task():
     """Test agent with a simple file creation task."""
     print("\n=== Testing Agent with Simple File Task ===")
 
-    # Load config
-    config_path = Path("mini_agent/config/config.yaml")
+    config_path = Config.get_default_config_path()
+    if not config_path.exists():
+        pytest.skip("config.yaml not found in dev or ~/.mini-agent/config")
     config = Config.from_yaml(config_path)
 
     # Create temp workspace
@@ -151,8 +198,9 @@ async def test_agent_bash_task():
     """Test agent with a bash command task."""
     print("\n=== Testing Agent with Bash Task ===")
 
-    # Load config
-    config_path = Path("mini_agent/config/config.yaml")
+    config_path = Config.get_default_config_path()
+    if not config_path.exists():
+        pytest.skip("config.yaml not found in dev or ~/.mini-agent/config")
     config = Config.from_yaml(config_path)
 
     # Create temp workspace
