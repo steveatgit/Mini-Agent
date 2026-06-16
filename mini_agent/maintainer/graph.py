@@ -372,10 +372,24 @@ class MaintainerWorkflow:
                 "should_retry": reflection.should_retry,
                 "failure_summary": reflection.summary,
                 "llm_usage": usage or {},
-                "llm_summary": self._summarize_reflection(reflection.failure_category, reflection.should_retry, reflection.summary),
+                "llm_summary": self._summarize_reflection(
+                    reflection.failure_category,
+                    reflection.should_retry,
+                    reflection.summary,
+                    mode="llm" if self.verifier_client is not None and usage is not None else "fallback",
+                ),
             }
         )
-        self._print_summary(state, "reflect_failure", self._summarize_reflection(reflection.failure_category, reflection.should_retry, reflection.summary))
+        self._print_summary(
+            state,
+            "reflect_failure",
+            self._summarize_reflection(
+                reflection.failure_category,
+                reflection.should_retry,
+                reflection.summary,
+                mode="llm" if self.verifier_client is not None and usage is not None else "fallback",
+            ),
+        )
         return state
 
     def package_artifacts(self, state: MaintainerState) -> MaintainerState:
@@ -415,10 +429,24 @@ class MaintainerWorkflow:
                 "pr_writer_mode": "llm" if self.pr_writer_client is not None and pr_writer_error is None else "fallback",
                 "error": pr_writer_error,
                 "llm_usage": usage or {},
-                "llm_summary": self._summarize_pr_description(changed, pr_description, pr_writer_error),
+                "llm_summary": self._summarize_pr_description(
+                    changed,
+                    pr_description,
+                    pr_writer_error,
+                    mode="llm" if self.pr_writer_client is not None and pr_writer_error is None else "fallback",
+                ),
             }
         )
-        self._print_summary(state, "package_artifacts", self._summarize_pr_description(changed, pr_description, pr_writer_error))
+        self._print_summary(
+            state,
+            "package_artifacts",
+            self._summarize_pr_description(
+                changed,
+                pr_description,
+                pr_writer_error,
+                mode="llm" if self.pr_writer_client is not None and pr_writer_error is None else "fallback",
+            ),
+        )
         return state
 
     def _timed_node(self, name: str, fn):
@@ -479,14 +507,14 @@ class MaintainerWorkflow:
             return f"llm: patch_applied files={len(modified_files)}"
         return f"llm: patch_failed error={error or 'unknown'}"
 
-    def _summarize_reflection(self, failure_category: str, should_retry: bool, summary: str) -> str:
-        return f"llm: category={failure_category}; retry={str(should_retry).lower()}; summary={summary[:120]}"
+    def _summarize_reflection(self, failure_category: str, should_retry: bool, summary: str, *, mode: str) -> str:
+        return f"{mode}: category={failure_category}; retry={str(should_retry).lower()}; summary={summary[:120]}"
 
-    def _summarize_pr_description(self, changed_files: list[str], pr_description: str, error: str | None) -> str:
+    def _summarize_pr_description(self, changed_files: list[str], pr_description: str, error: str | None, *, mode: str) -> str:
         if error:
-            return f"llm: pr_writer_fallback files={len(changed_files)}"
+            return f"{mode}: pr_writer_fallback files={len(changed_files)}"
         headline = pr_description.splitlines()[0] if pr_description else "PR Description"
-        return f"llm: pr_written files={len(changed_files)}; headline={headline[:80]}"
+        return f"{mode}: pr_written files={len(changed_files)}; headline={headline[:80]}"
 
     def _print_summary(self, state: MaintainerState, node: str, summary: str) -> None:
         if not summary:

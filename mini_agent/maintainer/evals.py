@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 import subprocess
 
+from .artifacts import make_run_id
 from .implementer import ImplementerClient
 from .planner import PlannerClient
 from .pr_writer import PRWriterClient
@@ -192,6 +193,7 @@ def run_eval_tasks(
 
     tasks = load_eval_tasks(tasks_root)
     task_results: list[MaintainerEvalTaskResult] = []
+    eval_run_id = make_run_id("eval")
     for task in tasks:
         test_command = test_command_override or task.test_command
         task_repo_ref = task.repo_ref or task.task_id
@@ -206,7 +208,7 @@ def run_eval_tasks(
                 task.issue_text,
                 test_command=test_command,
                 workspace_dir=out_dir,
-                run_id=f"eval-{task.task_id}",
+                run_id=f"{eval_run_id}-{task.task_id}",
                 constraints=[f"eval_task_id={task.task_id}"],
                 verification_timeout=verification_timeout,
                 max_retries=max_retries,

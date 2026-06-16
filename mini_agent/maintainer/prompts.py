@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -43,15 +45,10 @@ class IssueTriagePayload(BaseModel):
     def clean_summary(cls, value: str) -> str:
         return str(value).strip()[:300]
 
-    @field_validator("keywords", "suspected_files", "acceptance_criteria")
+    @field_validator("keywords", "suspected_files", "acceptance_criteria", mode="before")
     @classmethod
-    def clean_list(cls, value: list[str]) -> list[str]:
-        cleaned = []
-        for item in value:
-            text = str(item).strip()
-            if text:
-                cleaned.append(text[:240])
-        return list(dict.fromkeys(cleaned))
+    def coerce_list(cls, value: Any) -> list[str]:
+        return _coerce_string_list(value, max_item_length=240)
 
 
 class ContextSelectionPayload(BaseModel):
@@ -60,11 +57,11 @@ class ContextSelectionPayload(BaseModel):
     files: list[str] = Field(default_factory=list, max_length=20)
     rationale: str = Field(default="", max_length=600)
 
-    @field_validator("files")
+    @field_validator("files", mode="before")
     @classmethod
-    def clean_files(cls, value: list[str]) -> list[str]:
+    def clean_files(cls, value: Any) -> list[str]:
         cleaned = []
-        for item in value:
+        for item in _coerce_string_list(value, preferred_keys=("path", "file", "name"), max_item_length=240):
             path = str(item).strip().lstrip("/")
             if path and ".." not in path.split("/"):
                 cleaned.append(path[:240])
@@ -84,15 +81,15 @@ class PatchPlanPayload(BaseModel):
     test_strategy: list[str] = Field(default_factory=list, max_length=12)
     risks: list[str] = Field(default_factory=list, max_length=12)
 
-    @field_validator("target_files", "changes", "test_strategy", "risks")
+    @field_validator("target_files", mode="before")
     @classmethod
-    def clean_list(cls, value: list[str]) -> list[str]:
-        cleaned = []
-        for item in value:
-            text = str(item).strip()
-            if text:
-                cleaned.append(text[:300])
-        return list(dict.fromkeys(cleaned))
+    def clean_target_files(cls, value: Any) -> list[str]:
+        return _coerce_string_list(value, preferred_keys=("path", "file", "name"), max_item_length=300)
+
+    @field_validator("changes", "test_strategy", "risks", mode="before")
+    @classmethod
+    def clean_list(cls, value: Any) -> list[str]:
+        return _coerce_string_list(value, preferred_keys=("description", "change", "risk", "strategy", "command", "step"), max_item_length=300)
 
 
 class FailureReflectionPayload(BaseModel):
@@ -108,12 +105,44 @@ class FailureReflectionPayload(BaseModel):
     def clean_string(cls, value: str) -> str:
         return str(value).strip()
 
-    @field_validator("next_steps")
+    @field_validator("next_steps", mode="before")
     @classmethod
-    def clean_next_steps(cls, value: list[str]) -> list[str]:
-        cleaned = []
-        for item in value:
-            text = str(item).strip()
-            if text:
-                cleaned.append(text[:300])
-        return list(dict.fromkeys(cleaned))
+    def clean_next_steps(cls, value: Any) -> list[str]:
+        return _coerce_string_list(value, preferred_keys=("description", "step", "action"), max_item_length=300)
+
+
+def _coerce_string_list(
+    value: Any,
+    *,
+    preferred_keys: tuple[str, ...] = ("text", "description", "summary", "path", "file", "name"),
+    max_item_length: int,
+) -> list[str]:
+    """Accept common model shapes while keeping internal payloads as list[str]."""
+
+    if value is None:
+        return []
+    if isinstance(value, str):
+        items: list[Any] = [value]
+    elif isinstance(value, dict):
+        items = [value]
+    elif isinstance(value, list):
+        items = value
+    else:
+        items = [value]
+
+    cleaned: list[str] = []
+    for item in items:
+        if isinstance(item, dict):
+            text = ""
+            for key in preferred_keys:
+                if key in item:
+                    text = str(item[key])
+                    break
+            if not text:
+                text = " ".join(str(part) for part in item.values() if isinstance(part, (str, int, float)))
+        else:
+            text = str(item)
+        text = text.strip()
+        if text:
+            cleaned.append(text[:max_item_length])
+    return list(dict.fromkeys(cleaned))

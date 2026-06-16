@@ -412,7 +412,7 @@ def test_pr_writer_fallback_includes_rollback_guidance():
 
 
 def test_model_context_select_filters_to_existing_repo_files():
-    client = FakePlanClient([{"files": ["/app.py", "../bad.py", "missing.py", "tests/test_app.py"], "rationale": "focused"}])
+    client = FakePlanClient([{"files": [{"path": "/app.py"}, "../bad.py", "missing.py", "tests/test_app.py"], "rationale": "focused"}])
     payload, error, usage = run_model_context_select(
         client=client,
         issue_text="fix app",
@@ -496,6 +496,30 @@ def test_reflect_on_failure_uses_verifier_payload():
     assert client.messages
 
 
+def test_reflect_on_failure_accepts_string_next_steps():
+    client = FakeReflectClient(
+        {
+            "should_retry": True,
+            "failure_category": "test_failed",
+            "summary": "README is missing required text.",
+            "next_steps": "Edit README.md and rerun docs tests.",
+        }
+    )
+
+    reflection, _usage = reflect_on_failure(
+        test_results=[{"status": "fail", "exit_code": 1, "summary": "missing docs text"}],
+        diff="",
+        plan="plan",
+        retry_count=1,
+        max_retries=2,
+        verifier_client=client,
+        has_implementer=True,
+    )
+
+    assert reflection.failure_category == "test_failed"
+    assert reflection.next_steps == ["Edit README.md and rerun docs tests."]
+
+
 def test_classify_failure_categories():
     assert classify_failure({"status": "timeout"}) == "test_timeout"
     assert classify_failure({"status": "skipped"}) == "test_skipped"
@@ -531,18 +555,38 @@ def test_extract_unified_diff_from_fenced_model_response():
     assert patch.endswith("\n")
 
 
+def test_patch_apply_rejects_malformed_hunk_header_before_git_apply(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    patch = """diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@
+-# Demo
++# Changed
+"""
+
+    result = apply_unified_diff(repo, patch, allowed_files=["README.md"])
+
+    assert not result.success
+    assert "malformed hunk header" in result.error
+    assert result.stderr == ""
+
+
 def test_prompt_payloads_clean_model_outputs():
     triage = IssueTriagePayload(
         issue_type="BUG",
         summary="  Broken behavior  ",
         keywords=["parser", "parser", ""],
         suspected_files=["src/parser.py", "src/parser.py"],
-        acceptance_criteria=[" should pass "],
+        acceptance_criteria=" should pass ",
     )
-    context = ContextSelectionPayload(files=["/src/parser.py", "../bad.py", "tests/test_parser.py"], rationale="  focused  ")
+    context = ContextSelectionPayload(files=[{"path": "/src/parser.py"}, "../bad.py", "tests/test_parser.py"], rationale="  focused  ")
 
     assert triage.issue_type == "bug"
     assert triage.keywords == ["parser"]
+    assert triage.acceptance_criteria == ["should pass"]
     assert context.files == ["src/parser.py", "tests/test_parser.py"]
     assert context.rationale == "focused"
 
@@ -610,7 +654,8 @@ def test_run_maintainer_eval_cli(tmp_path, capsys):
     assert (tmp_path / "cli-eval-out" / "eval_results.json").exists()
     assert "[maintain-eval] start" in output
     assert "[maintain-eval][task-001] start" in output
-    assert "[maintainer][eval-task-001][bootstrap_run] start" in output
+    assert "[maintainer][" in output
+    assert "-eval-task-001][bootstrap_run] start" in output
     assert "[maintainer][verification] start command=python -m pytest tests/test_app.py" in output
     assert "summary=" in output
 
@@ -665,15 +710,17 @@ def test_run_maintainer_eval_cli_with_fixture_root(tmp_path):
         implementer_client=FakePatchClient(patch),
     )
 
-    run_dir = tmp_path / "fixture-eval-out" / "artifacts" / "runs" / "eval-python-cli-001"
     assert result.metrics["total"] == 1
     assert result.task_results[0].status == "pass"
     assert result.task_results[0].repo_source.endswith("/python-cli-001/repo")
+    run_dir = result.task_results[0].run_dir
     summary = (run_dir / "run_summary.md").read_text(encoding="utf-8")
     state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
     assert "## Node Timings" in summary
     assert "## Model Calls" in summary
     assert state["model_call_counts"]["implementer"] == 1
+    assert result.task_results[0].run_id.endswith("-python-cli-001")
+    assert result.task_results[0].run_id != "eval-python-cli-001"
 
 
 def test_run_eval_tasks_includes_failure_reason_for_failed_fixture(tmp_path):
@@ -712,7 +759,6 @@ def test_run_eval_tasks_includes_failure_reason_for_failed_fixture(tmp_path):
         use_langgraph=False,
     )
 
-    run_dir = tmp_path / "failure-eval-out" / "artifacts" / "runs" / "eval-failure-001"
     report = (tmp_path / "failure-eval-out" / "eval_report.md").read_text(encoding="utf-8")
 
     assert result.task_results[0].status == "fail"
@@ -720,6 +766,7 @@ def test_run_eval_tasks_includes_failure_reason_for_failed_fixture(tmp_path):
     assert "The verification step should fail" in report
     assert "failure_summary" in report
     assert "Command failed with exit code 1" in result.task_results[0].failure_summary
+    run_dir = result.task_results[0].run_dir
     assert run_dir.exists()
 
 

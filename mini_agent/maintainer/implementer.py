@@ -87,6 +87,10 @@ def apply_unified_diff(repo_path: Path, patch: str, *, allowed_files: list[str])
     """Validate and apply a unified diff in repo_path."""
 
     modified_files = files_touched_by_patch(patch)
+    hunk_error = _malformed_hunk_header(patch)
+    if hunk_error:
+        return PatchApplyResult(success=False, patch=patch, error=hunk_error, modified_files=modified_files)
+
     disallowed = _disallowed_files(modified_files, allowed_files)
     if disallowed:
         return PatchApplyResult(
@@ -138,7 +142,9 @@ def _implementer_system_prompt() -> str:
     return (
         f"{PLAN_PATCH_PROMPT}\n\n"
         "You are the implementer node. Return only a git unified diff starting with 'diff --git'. "
-        "Do not include prose. Keep the patch minimal and scoped to allowed files."
+        "Do not include prose. Keep the patch minimal and scoped to allowed files. "
+        "Every hunk header must include line ranges, for example '@@ -1,3 +1,5 @@'. "
+        "Never return a bare '@@' hunk header."
     )
 
 
@@ -184,6 +190,13 @@ def _disallowed_files(modified_files: list[str], allowed_files: list[str]) -> li
     if not allowed:
         return modified_files
     return [path for path in modified_files if path not in allowed]
+
+
+def _malformed_hunk_header(patch: str) -> str:
+    for line in patch.splitlines():
+        if line.startswith("@@") and not re.match(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@", line):
+            return "Patch contains malformed hunk header; expected '@@ -old,count +new,count @@'."
+    return ""
 
 
 def _usage_dict(usage: TokenUsage | None) -> dict[str, int] | None:
