@@ -136,6 +136,7 @@ class MaintainerWorkflow:
     def issue_triage(self, state: MaintainerState) -> MaintainerState:
         planner_error = None
         usage = None
+        llm_summary = ""
         if self.planner_client is not None:
             self._increment_model_calls(state, "planner")
             payload, planner_error, usage = run_model_triage(
@@ -146,10 +147,13 @@ class MaintainerWorkflow:
             self._record_usage(state, "planner", usage)
             if payload is not None:
                 triage = payload.model_dump()
+                llm_summary = self._summarize_triage(triage, mode="llm")
             else:
                 triage = triage_issue(state.get("issue_text", ""), state.get("repo_map", {}))
+                llm_summary = self._summarize_triage(triage, mode="fallback")
         else:
             triage = triage_issue(state.get("issue_text", ""), state.get("repo_map", {}))
+            llm_summary = self._summarize_triage(triage, mode="fallback")
         state["triage"] = triage
         state["suspected_files"] = list(triage.get("suspected_files", []))
         self.artifacts.write_json("triage.json", triage)
@@ -160,13 +164,16 @@ class MaintainerWorkflow:
                 "suspected_files": state["suspected_files"],
                 "error": planner_error,
                 "llm_usage": usage or {},
+                "llm_summary": llm_summary,
             }
         )
+        self._print_summary(state, "issue_triage", llm_summary)
         return state
 
     def context_select(self, state: MaintainerState) -> MaintainerState:
         planner_error = None
         usage = None
+        llm_summary = ""
         if self.planner_client is not None:
             self._increment_model_calls(state, "planner")
             payload, planner_error, usage = run_model_context_select(
@@ -177,12 +184,15 @@ class MaintainerWorkflow:
             )
             self._record_usage(state, "planner", usage)
             selected_files = payload.files if payload is not None else []
+            llm_summary = self._summarize_context(selected_files, payload is not None)
         else:
             selected_files = []
         if not selected_files:
             selected_files = select_context_files(state.get("issue_text", ""), state.get("repo_map", {}))
+            llm_summary = self._summarize_context(selected_files, False)
         if not selected_files:
             selected_files = state.get("suspected_files", [])
+            llm_summary = self._summarize_context(selected_files, False)
         state["suspected_files"] = selected_files
         context = render_selected_context(self.repo_path, selected_files)
         state["selected_context"] = context
@@ -194,14 +204,17 @@ class MaintainerWorkflow:
                 "selected_files": selected_files,
                 "error": planner_error,
                 "llm_usage": usage or {},
+                "llm_summary": llm_summary,
             }
         )
+        self._print_summary(state, "context_select", llm_summary)
         return state
 
     def plan_patch(self, state: MaintainerState) -> MaintainerState:
         planner_error = None
         usage = None
         plan_payload: dict[str, Any] | None = None
+        llm_summary = ""
         if self.planner_client is not None:
             self._increment_model_calls(state, "planner")
             payload, planner_error, usage = run_model_patch_plan(
@@ -216,6 +229,7 @@ class MaintainerWorkflow:
             if payload is not None:
                 plan_payload = payload.model_dump()
                 plan = render_structured_plan(payload, state.get("test_command"))
+                llm_summary = self._summarize_plan(plan_payload, mode="llm")
             else:
                 plan = render_plan(
                     state.get("issue_text", ""),
@@ -223,6 +237,7 @@ class MaintainerWorkflow:
                     state.get("suspected_files", []),
                     state.get("test_command"),
                 )
+                llm_summary = self._summarize_plan(plan_payload or {}, mode="fallback")
         else:
             plan = render_plan(
                 state.get("issue_text", ""),
@@ -230,6 +245,7 @@ class MaintainerWorkflow:
                 state.get("suspected_files", []),
                 state.get("test_command"),
             )
+            llm_summary = self._summarize_plan(plan_payload or {}, mode="fallback")
         state["plan"] = plan
         if plan_payload is None:
             plan_payload = {
@@ -249,8 +265,10 @@ class MaintainerWorkflow:
                 "target_files": plan_payload.get("target_files", []),
                 "error": planner_error,
                 "llm_usage": usage or {},
+                "llm_summary": llm_summary,
             }
         )
+        self._print_summary(state, "plan_patch", llm_summary)
         return state
 
     def implement_patch(self, state: MaintainerState) -> MaintainerState:
@@ -275,6 +293,7 @@ class MaintainerWorkflow:
             state["implementation_notes"] = notes
             self._record_usage(state, "implementer", result.usage)
             self.artifacts.write_text("implementation.patch", result.patch)
+            llm_summary = self._summarize_patch_result(result.success, result.modified_files or [], result.error)
             self.artifacts.append_trace(
                 {
                     "node": "implement_patch",
@@ -284,8 +303,10 @@ class MaintainerWorkflow:
                     "error": result.error,
                     "stderr": result.stderr[-2000:] if result.stderr else "",
                     "llm_usage": result.usage or {},
+                    "llm_summary": llm_summary,
                 }
             )
+            self._print_summary(state, "implement_patch", llm_summary)
             return state
 
         notes = list(state.get("implementation_notes", []))
@@ -351,8 +372,10 @@ class MaintainerWorkflow:
                 "should_retry": reflection.should_retry,
                 "failure_summary": reflection.summary,
                 "llm_usage": usage or {},
+                "llm_summary": self._summarize_reflection(reflection.failure_category, reflection.should_retry, reflection.summary),
             }
         )
+        self._print_summary(state, "reflect_failure", self._summarize_reflection(reflection.failure_category, reflection.should_retry, reflection.summary))
         return state
 
     def package_artifacts(self, state: MaintainerState) -> MaintainerState:
@@ -392,8 +415,10 @@ class MaintainerWorkflow:
                 "pr_writer_mode": "llm" if self.pr_writer_client is not None and pr_writer_error is None else "fallback",
                 "error": pr_writer_error,
                 "llm_usage": usage or {},
+                "llm_summary": self._summarize_pr_description(changed, pr_description, pr_writer_error),
             }
         )
+        self._print_summary(state, "package_artifacts", self._summarize_pr_description(changed, pr_description, pr_writer_error))
         return state
 
     def _timed_node(self, name: str, fn):
@@ -432,6 +457,42 @@ class MaintainerWorkflow:
         totals["completion_tokens"] += int(usage.get("completion_tokens", 0))
         totals["total_tokens"] += int(usage.get("total_tokens", 0))
         state["llm_usage_total"] = totals
+
+    def _summarize_triage(self, triage: dict[str, Any], *, mode: str) -> str:
+        issue_type = triage.get("type") or triage.get("issue_type") or "unknown"
+        suspected = triage.get("suspected_files", []) or []
+        keywords = triage.get("keywords", []) or []
+        return f"{mode}: {issue_type}; files={len(suspected)}; keywords={', '.join(keywords[:3]) or 'none'}"
+
+    def _summarize_context(self, selected_files: list[str], model_used: bool) -> str:
+        mode = "llm" if model_used else "fallback"
+        preview = ", ".join(selected_files[:3]) if selected_files else "none"
+        return f"{mode}: selected={len(selected_files)}; files={preview}"
+
+    def _summarize_plan(self, plan_payload: dict[str, Any], *, mode: str) -> str:
+        files = plan_payload.get("target_files", []) or []
+        changes = plan_payload.get("changes", []) or []
+        return f"{mode}: target_files={len(files)}; changes={len(changes)}"
+
+    def _summarize_patch_result(self, success: bool, modified_files: list[str], error: str) -> str:
+        if success:
+            return f"llm: patch_applied files={len(modified_files)}"
+        return f"llm: patch_failed error={error or 'unknown'}"
+
+    def _summarize_reflection(self, failure_category: str, should_retry: bool, summary: str) -> str:
+        return f"llm: category={failure_category}; retry={str(should_retry).lower()}; summary={summary[:120]}"
+
+    def _summarize_pr_description(self, changed_files: list[str], pr_description: str, error: str | None) -> str:
+        if error:
+            return f"llm: pr_writer_fallback files={len(changed_files)}"
+        headline = pr_description.splitlines()[0] if pr_description else "PR Description"
+        return f"llm: pr_written files={len(changed_files)}; headline={headline[:80]}"
+
+    def _print_summary(self, state: MaintainerState, node: str, summary: str) -> None:
+        if not summary:
+            return
+        run_id = state.get("run_id", "maintain")
+        print(f"[maintainer][{run_id}][{node}] summary={summary}", flush=True)
 
     def _summarize_state(self, state: MaintainerState) -> dict[str, Any]:
         from .artifacts import summarize_state_for_json

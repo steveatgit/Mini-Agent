@@ -796,6 +796,8 @@ mini-agent maintain --repo /tmp/demo-repo --issue-file issue.md --test "pytest"
   - 当前 workflow 节点
   - verification 命令开始/结束
   - 失败时的摘要
+- [x] 增加简洁的大模型决策摘要：
+  - triage / context / plan / implement / reflect / pr
 - [ ] CI 中跳过需要真实 API key 的 LLM 集成测试。
 - [ ] 将需要真实模型的测试标记为 `@pytest.mark.integration`。
 

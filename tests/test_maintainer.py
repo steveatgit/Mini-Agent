@@ -612,6 +612,7 @@ def test_run_maintainer_eval_cli(tmp_path, capsys):
     assert "[maintain-eval][task-001] start" in output
     assert "[maintainer][eval-task-001][bootstrap_run] start" in output
     assert "[maintainer][verification] start command=python -m pytest tests/test_app.py" in output
+    assert "summary=" in output
 
 
 def test_run_maintainer_eval_cli_with_fixture_root(tmp_path):
