@@ -9,6 +9,7 @@ from typing import Any
 
 from .implementer import ImplementerClient
 from .planner import PlannerClient
+from .pr_writer import PRWriterClient
 from .reflector import ReflectorClient
 from .runner import MaintainerRunResult, run_maintainer
 
@@ -138,6 +139,7 @@ def run_eval_tasks(
     planner_client: PlannerClient | None = None,
     implementer_client: ImplementerClient | None = None,
     verifier_client: ReflectorClient | None = None,
+    pr_writer_client: PRWriterClient | None = None,
 ) -> MaintainerEvalRunResult:
     """Run maintainer workflow over all local eval tasks."""
 
@@ -164,6 +166,7 @@ def run_eval_tasks(
             planner_client=planner_client,
             implementer_client=implementer_client,
             verifier_client=verifier_client,
+            pr_writer_client=pr_writer_client,
         )
         task_results.append(_task_result_from_run(task, run_result, test_command))
 

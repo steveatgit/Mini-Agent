@@ -511,6 +511,11 @@ Examples:
         action="store_true",
         help="Use the configured maintainer verifier model to classify failed verification runs.",
     )
+    maintain_parser.add_argument(
+        "--llm-pr",
+        action="store_true",
+        help="Use the configured maintainer PR writer model to generate pr_description.md.",
+    )
 
     maintain_eval_parser = subparsers.add_parser("maintain-eval", help="Run local OSS maintainer eval tasks")
     maintain_eval_parser.add_argument("--repo", required=True, help="Path to the local git repository to evaluate against")
@@ -561,6 +566,11 @@ Examples:
         "--llm-reflect",
         action="store_true",
         help="Use the configured maintainer verifier model to classify failed verification runs.",
+    )
+    maintain_eval_parser.add_argument(
+        "--llm-pr",
+        action="store_true",
+        help="Use the configured maintainer PR writer model for each eval task.",
     )
 
     return parser.parse_args()
@@ -1255,7 +1265,7 @@ async def run_event_trace_eval(args: argparse.Namespace, workspace_dir: Path) ->
 def run_maintainer_cli(args: argparse.Namespace, workspace_dir: Path) -> None:
     """Run the local OSS maintainer workflow."""
 
-    roles = _maintainer_llm_roles(args.llm_plan, args.llm_implement, args.llm_reflect, False)
+    roles = _maintainer_llm_roles(args.llm_plan, args.llm_implement, args.llm_reflect, args.llm_pr)
     issue_file = Path(args.issue_file).expanduser()
     if not issue_file.is_absolute():
         issue_file = Path.cwd() / issue_file
@@ -1273,6 +1283,7 @@ def run_maintainer_cli(args: argparse.Namespace, workspace_dir: Path) -> None:
         planner_client=roles.planner,
         implementer_client=roles.implementer,
         verifier_client=roles.verifier,
+        pr_writer_client=roles.pr_writer,
     )
     print(f"{Colors.GREEN}✅ Maintainer run complete{Colors.RESET}")
     print(f"{Colors.DIM}Status: {result.status}{Colors.RESET}")
@@ -1284,7 +1295,7 @@ def run_maintainer_cli(args: argparse.Namespace, workspace_dir: Path) -> None:
 def run_maintainer_eval_cli(args: argparse.Namespace, workspace_dir: Path) -> None:
     """Run local maintainer eval tasks."""
 
-    roles = _maintainer_llm_roles(args.llm_plan, args.llm_implement, args.llm_reflect, False)
+    roles = _maintainer_llm_roles(args.llm_plan, args.llm_implement, args.llm_reflect, args.llm_pr)
     result = run_eval_tasks(
         repo_path=args.repo,
         tasks_dir=args.tasks_dir,
@@ -1297,6 +1308,7 @@ def run_maintainer_eval_cli(args: argparse.Namespace, workspace_dir: Path) -> No
         planner_client=roles.planner,
         implementer_client=roles.implementer,
         verifier_client=roles.verifier,
+        pr_writer_client=roles.pr_writer,
     )
     report_path = result.output_dir / "eval_report.md"
     results_path = result.output_dir / "eval_results.json"

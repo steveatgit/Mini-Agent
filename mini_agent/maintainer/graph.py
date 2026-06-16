@@ -7,8 +7,9 @@ from typing import Any
 
 from .artifacts import ArtifactWriter
 from .implementer import ImplementerClient, run_model_implementer
-from .patch_packager import render_plan, render_pr_description, render_run_summary
+from .patch_packager import render_plan, render_run_summary
 from .planner import PlannerClient, render_structured_plan, run_model_context_select, run_model_patch_plan, run_model_triage
+from .pr_writer import PRWriterClient, render_model_pr_description
 from .reflector import ReflectorClient, reflect_on_failure
 from .repo_inspector import (
     changed_files,
@@ -38,6 +39,7 @@ class MaintainerWorkflow:
         planner_client: PlannerClient | None = None,
         implementer_client: ImplementerClient | None = None,
         verifier_client: ReflectorClient | None = None,
+        pr_writer_client: PRWriterClient | None = None,
     ):
         self.repo_path = repo_path
         self.artifacts = artifacts
@@ -47,6 +49,7 @@ class MaintainerWorkflow:
         self.planner_client = planner_client
         self.implementer_client = implementer_client
         self.verifier_client = verifier_client
+        self.pr_writer_client = pr_writer_client
 
     def run(self, state: MaintainerState) -> MaintainerState:
         """Run via LangGraph when installed, otherwise use the deterministic fallback."""
@@ -341,7 +344,15 @@ class MaintainerWorkflow:
         self.artifacts.write_text("final.diff", diff + ("\n" if diff else ""))
         self.artifacts.write_text("final.patch", patch + ("\n" if patch else ""))
 
-        pr_description = render_pr_description(state.get("issue_text", ""), changed, state.get("test_results", []))
+        pr_description, pr_writer_error = render_model_pr_description(
+            client=self.pr_writer_client,
+            issue_text=state.get("issue_text", ""),
+            changed_files=changed,
+            diff=diff,
+            test_results=state.get("test_results", []),
+            plan=state.get("plan", ""),
+            failure_summary=state.get("failure_summary", ""),
+        )
         state["pr_description"] = pr_description
         self.artifacts.write_text("pr_description.md", pr_description)
 
@@ -350,7 +361,15 @@ class MaintainerWorkflow:
         state["artifacts_dir"] = str(self.artifacts.run_dir)
         self.artifacts.write_text("run_summary.md", summary)
         self.artifacts.write_json("state.json", state)
-        self.artifacts.append_trace({"node": "package_artifacts", "changed_files": changed, "status": state.get("verification_status")})
+        self.artifacts.append_trace(
+            {
+                "node": "package_artifacts",
+                "changed_files": changed,
+                "status": state.get("verification_status"),
+                "pr_writer_mode": "llm" if self.pr_writer_client is not None and pr_writer_error is None else "fallback",
+                "error": pr_writer_error,
+            }
+        )
         return state
 
     def _verification_route(self, state: MaintainerState) -> str:

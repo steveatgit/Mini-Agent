@@ -7,6 +7,7 @@ from mini_agent.maintainer import run_maintainer
 from mini_agent.maintainer.evals import load_eval_task, load_eval_tasks, run_eval_tasks
 from mini_agent.maintainer.implementer import apply_unified_diff, extract_unified_diff
 from mini_agent.maintainer.planner import run_model_context_select
+from mini_agent.maintainer.pr_writer import render_model_pr_description
 from mini_agent.maintainer.prompts import ContextSelectionPayload, IssueTriagePayload
 from mini_agent.maintainer.reflector import classify_failure, reflect_on_failure
 from mini_agent.schema import LLMResponse
@@ -40,6 +41,16 @@ class FakePlanClient:
     async def generate(self, messages, tools=None):
         self.messages.append(messages)
         return LLMResponse(content=json.dumps(self.payloads.pop(0)), finish_reason="stop")
+
+
+class FakePRClient:
+    def __init__(self, markdown: str):
+        self.markdown = markdown
+        self.messages = []
+
+    async def generate(self, messages, tools=None):
+        self.messages.append(messages)
+        return LLMResponse(content=self.markdown, finish_reason="stop")
 
 
 def _init_repo(path):
@@ -92,6 +103,7 @@ def test_run_maintainer_cli_reads_issue_file(tmp_path):
         llm_plan=False,
         llm_implement=False,
         llm_reflect=False,
+        llm_pr=False,
     )
 
     run_maintainer_cli(args, tmp_path)
@@ -190,6 +202,52 @@ def test_run_maintainer_with_fake_planner_writes_structured_plan(tmp_path):
     assert plan_json["target_files"] == ["app.py", "tests/test_app.py"]
     assert "Coerce add inputs before summing." in (run_dir / "plan.md").read_text(encoding="utf-8")
     assert '"mode": "llm"' in trace
+
+
+def test_run_maintainer_with_fake_pr_writer_writes_model_description(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    pr_writer = FakePRClient(
+        "# PR Description\n\n"
+        "## Summary\n- Model generated summary.\n\n"
+        "## Issue Context\n- Covers the add issue.\n\n"
+        "## Key Changes\n- No changes needed.\n\n"
+        "## Verification\n- pytest passed.\n\n"
+        "## Risk and Rollback\n- Revert final.patch if needed.\n"
+    )
+
+    result = run_maintainer(
+        repo,
+        "app.py add should keep returning the sum\n\nExpected: tests pass.",
+        test_command="python -m pytest tests/test_app.py",
+        workspace_dir=tmp_path,
+        run_id="pr-demo",
+        use_langgraph=False,
+        pr_writer_client=pr_writer,
+    )
+
+    run_dir = tmp_path / "artifacts" / "runs" / "pr-demo"
+    pr_description = (run_dir / "pr_description.md").read_text(encoding="utf-8")
+    trace = (run_dir / "tool_trace.jsonl").read_text(encoding="utf-8")
+    assert result.status == "pass"
+    assert "Model generated summary." in pr_description
+    assert '"pr_writer_mode": "llm"' in trace
+
+
+def test_pr_writer_fallback_includes_rollback_guidance():
+    markdown, error = render_model_pr_description(
+        client=None,
+        issue_text="fix add",
+        changed_files=["app.py"],
+        diff="",
+        test_results=[{"command": "pytest", "status": "pass", "exit_code": 0}],
+        plan="plan",
+    )
+
+    assert error is None
+    assert "Risk and Rollback" in markdown
+    assert "Revert the patch" in markdown
 
 
 def test_model_context_select_filters_to_existing_repo_files():
@@ -355,6 +413,7 @@ def test_run_maintainer_eval_cli(tmp_path):
         llm_plan=False,
         llm_implement=False,
         llm_reflect=False,
+        llm_pr=False,
     )
 
     run_maintainer_eval_cli(args, tmp_path)

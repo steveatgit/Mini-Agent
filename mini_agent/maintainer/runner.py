@@ -9,6 +9,7 @@ from .artifacts import ArtifactWriter, make_run_id
 from .graph import MaintainerWorkflow
 from .implementer import ImplementerClient
 from .planner import PlannerClient
+from .pr_writer import PRWriterClient
 from .reflector import ReflectorClient
 from .repo_inspector import ensure_repo
 from .state import MaintainerState
@@ -38,6 +39,7 @@ def run_maintainer(
     planner_client: PlannerClient | None = None,
     implementer_client: ImplementerClient | None = None,
     verifier_client: ReflectorClient | None = None,
+    pr_writer_client: PRWriterClient | None = None,
 ) -> MaintainerRunResult:
     """Run the local maintainer workflow and write artifacts."""
 
@@ -64,6 +66,7 @@ def run_maintainer(
         planner_client=planner_client,
         implementer_client=implementer_client,
         verifier_client=verifier_client,
+        pr_writer_client=pr_writer_client,
     )
     state = workflow.run(state)
 

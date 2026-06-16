@@ -672,7 +672,7 @@ mini-agent maintain --repo /tmp/demo-repo --issue-file issue.md --test "pytest"
   - [x] `--llm-plan`
   - [x] `--llm-implement`
   - [x] `--llm-reflect`
-  - [ ] `--llm-pr`
+  - [x] `--llm-pr`
   - [ ] `--model-profile openrouter-free|local|custom`
 
 ### P0：实现 `implement_patch`
@@ -704,8 +704,8 @@ mini-agent maintain --repo /tmp/demo-repo --issue-file issue.md --test "pytest"
 
 ### P1：PR 文案和最终报告升级
 
-- [ ] 在 `package_artifacts` 中接入 pr_writer_model。
-- [ ] 生成 `pr_description.md` 时包含：
+- [x] 在 `package_artifacts` 中接入 pr_writer_model。
+- [x] 生成 `pr_description.md` 时包含：
   - 问题背景
   - 关键改动
   - 验证方式

@@ -59,9 +59,10 @@ def render_pr_description(issue_text: str, changed_files: list[str], test_result
             if verification.get("command")
             else "- Verification was skipped.",
             "",
-            "## Risk",
-            "- Review the generated diff before opening a PR.",
-        ]
+        "## Risk and Rollback",
+        "- Review the generated diff before opening a PR.",
+        "- Revert the patch from `final.patch` if verification or review finds regressions.",
+    ]
     )
     return "\n".join(lines) + "\n"
 
