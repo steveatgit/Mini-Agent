@@ -722,8 +722,8 @@ mini-agent maintain --repo /tmp/demo-repo --issue-file issue.md --test "pytest"
   - input summary
   - output summary
   - error
-- [ ] 记录 LLM request/response 的 token usage。
-- [ ] 在 eval report 中增加：
+- [x] 记录 LLM request/response 的 token usage。
+- [x] 在 eval report 中增加：
   - `avg_tokens`
   - `avg_duration_seconds`
   - `patch_apply_success_rate`
@@ -768,15 +768,15 @@ mini-agent maintain --repo /tmp/demo-repo --issue-file issue.md --test "pytest"
 
 ### P1：Demo 和文档
 
-- [ ] 新增 `docs/OSS_MAINTAINER_DEMO_CN.md`。
-- [ ] 写 3 分钟面试 demo 脚本：
+- [x] 新增 `docs/OSS_MAINTAINER_DEMO_CN.md`。
+- [x] 写 3 分钟面试 demo 脚本：
   - 项目目标
   - workflow 图
   - 一次成功修复
   - 一次失败反思
   - eval report
-- [ ] README 增加 `maintain` 和 `maintain-eval` 使用示例。
-- [ ] README 增加 artifacts 示例目录。
+- [x] README 增加 `maintain` 和 `maintain-eval` 使用示例。
+- [x] README 增加 artifacts 示例目录。
 - [ ] 增加一张架构图或 Mermaid 图。
 - [ ] 录制 demo gif 或 asciinema。
 

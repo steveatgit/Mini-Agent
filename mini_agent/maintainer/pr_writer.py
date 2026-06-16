@@ -7,7 +7,7 @@ import json
 import re
 from typing import Any, Protocol
 
-from mini_agent.schema import Message
+from mini_agent.schema import LLMResponse, Message, TokenUsage
 
 from .patch_packager import render_pr_description
 from .prompts import PR_WRITER_PROMPT
@@ -26,15 +26,15 @@ def render_model_pr_description(
     test_results: list[dict[str, Any]],
     plan: str,
     failure_summary: str = "",
-) -> tuple[str, str | None]:
+) -> tuple[str, str | None, dict[str, int] | None]:
     """Render a PR description with an optional model and deterministic fallback."""
 
     fallback = render_pr_description(issue_text, changed_files, test_results)
     if client is None:
-        return fallback, None
+        return fallback, None, None
 
     try:
-        response_text = _generate_sync(
+        response = _generate_sync(
             client,
             [
                 Message(role="system", content=_system_prompt()),
@@ -51,19 +51,18 @@ def render_model_pr_description(
                 ),
             ],
         )
-        description = _clean_markdown(response_text)
+        description = _clean_markdown(str(response.content))
     except RuntimeError as exc:
-        return fallback, str(exc)
+        return fallback, str(exc), None
 
     if not description:
-        return fallback, "PR writer response was empty."
-    return description, None
+        return fallback, "PR writer response was empty.", _usage_dict(response.usage)
+    return description, None, _usage_dict(response.usage)
 
 
-def _generate_sync(client: PRWriterClient, messages: list[Message]) -> str:
-    async def _call() -> str:
-        response = await client.generate(messages=messages, tools=None)
-        return str(response.content)
+def _generate_sync(client: PRWriterClient, messages: list[Message]) -> LLMResponse:
+    async def _call() -> LLMResponse:
+        return await client.generate(messages=messages, tools=None)
 
     try:
         asyncio.get_running_loop()
@@ -116,3 +115,13 @@ def _clean_markdown(text: str) -> str:
     if not cleaned.startswith("#"):
         cleaned = "# PR Description\n\n" + cleaned
     return cleaned + "\n"
+
+
+def _usage_dict(usage: TokenUsage | None) -> dict[str, int] | None:
+    if usage is None:
+        return None
+    return {
+        "prompt_tokens": usage.prompt_tokens,
+        "completion_tokens": usage.completion_tokens,
+        "total_tokens": usage.total_tokens,
+    }

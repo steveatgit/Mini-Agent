@@ -58,6 +58,8 @@ def run_maintainer(
         "implementation_notes": [],
         "node_timings": {},
         "model_call_counts": {},
+        "llm_usage": {},
+        "llm_usage_total": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     }
     workflow = MaintainerWorkflow(
         repo,

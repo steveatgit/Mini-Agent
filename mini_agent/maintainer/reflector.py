@@ -7,7 +7,7 @@ import json
 import re
 from typing import Any, Protocol
 
-from mini_agent.schema import Message
+from mini_agent.schema import LLMResponse, Message, TokenUsage
 
 from .prompts import FAILURE_REFLECTION_PROMPT, FailureReflectionPayload
 
@@ -25,7 +25,7 @@ def reflect_on_failure(
     max_retries: int,
     verifier_client: ReflectorClient | None = None,
     has_implementer: bool = False,
-) -> FailureReflectionPayload:
+) -> tuple[FailureReflectionPayload, dict[str, int] | None]:
     """Classify a verification failure and decide whether another attempt is useful."""
 
     latest = test_results[-1] if test_results else {}
@@ -36,10 +36,10 @@ def reflect_on_failure(
         has_implementer=has_implementer,
     )
     if verifier_client is None:
-        return fallback
+        return fallback, None
 
     try:
-        response_text = _generate_sync(
+        response = _generate_sync(
             verifier_client,
             [
                 Message(role="system", content=_reflector_system_prompt()),
@@ -55,18 +55,18 @@ def reflect_on_failure(
                 ),
             ],
         )
-        payload = FailureReflectionPayload.model_validate(_extract_json_object(response_text))
+        payload = FailureReflectionPayload.model_validate(_extract_json_object(str(response.content)))
     except Exception as exc:
         return FailureReflectionPayload(
             should_retry=fallback.should_retry,
             failure_category="model_format_error",
             summary=f"Verifier reflection failed to produce valid JSON: {exc}",
             next_steps=fallback.next_steps,
-        )
+        ), None
 
     if retry_count >= max_retries:
         payload.should_retry = False
-    return payload
+    return payload, _usage_dict(response.usage)
 
 
 def deterministic_reflection(
@@ -113,10 +113,9 @@ def classify_failure(latest_result: dict[str, Any]) -> str:
     return "unknown"
 
 
-def _generate_sync(client: ReflectorClient, messages: list[Message]) -> str:
-    async def _call() -> str:
-        response = await client.generate(messages=messages, tools=None)
-        return str(response.content)
+def _generate_sync(client: ReflectorClient, messages: list[Message]) -> LLMResponse:
+    async def _call() -> LLMResponse:
+        return await client.generate(messages=messages, tools=None)
 
     try:
         asyncio.get_running_loop()
@@ -175,3 +174,13 @@ def _next_steps_for_category(category: str) -> list[str]:
     if category == "test_failed":
         return ["Inspect the failing assertion and update the patch with a narrower fix."]
     return ["Inspect verification output and decide whether more context is needed."]
+
+
+def _usage_dict(usage: TokenUsage | None) -> dict[str, int] | None:
+    if usage is None:
+        return None
+    return {
+        "prompt_tokens": usage.prompt_tokens,
+        "completion_tokens": usage.completion_tokens,
+        "total_tokens": usage.total_tokens,
+    }

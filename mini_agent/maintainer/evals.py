@@ -47,6 +47,10 @@ class MaintainerEvalTaskResult:
     failure_summary: str
     failure_category: str
     retry_count: int
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    node_duration_seconds: float
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -62,6 +66,10 @@ class MaintainerEvalTaskResult:
             "failure_summary": self.failure_summary,
             "failure_category": self.failure_category,
             "retry_count": self.retry_count,
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "total_tokens": self.total_tokens,
+            "node_duration_seconds": self.node_duration_seconds,
         }
 
 
@@ -80,16 +88,34 @@ class MaintainerEvalRunResult:
         pass_count = sum(1 for result in self.task_results if result.status == "pass")
         failure_categories: dict[str, int] = {}
         retry_total = 0
+        token_total = 0
+        prompt_total = 0
+        completion_total = 0
+        duration_total = 0.0
         for result in self.task_results:
             retry_total += result.retry_count
+            token_total += result.total_tokens
+            prompt_total += result.prompt_tokens
+            completion_total += result.completion_tokens
+            duration_total += result.node_duration_seconds
             if result.status != "pass":
                 category = result.failure_category or "unknown"
                 failure_categories[category] = failure_categories.get(category, 0) + 1
+        retried = [result for result in self.task_results if result.retry_count > 0]
+        retried_pass = sum(1 for result in retried if result.status == "pass")
+        patch_applied = sum(1 for result in self.task_results if result.status == "pass" and result.changed_files)
         return {
             "total": total,
             "resolved_rate": pass_count / total if total else 0.0,
             "test_pass_rate": pass_count / total if total else 0.0,
             "avg_iterations": retry_total / total if total else 0.0,
+            "avg_tokens": token_total / total if total else 0.0,
+            "avg_duration_seconds": duration_total / total if total else 0.0,
+            "patch_apply_success_rate": patch_applied / total if total else 0.0,
+            "retry_success_rate": retried_pass / len(retried) if retried else 0.0,
+            "prompt_tokens_total": prompt_total,
+            "completion_tokens_total": completion_total,
+            "total_tokens_total": token_total,
             "failure_categories": failure_categories,
         }
 
@@ -204,6 +230,13 @@ def render_eval_report(result: MaintainerEvalRunResult) -> str:
         f"- resolved_rate: {metrics['resolved_rate']:.2f}",
         f"- test_pass_rate: {metrics['test_pass_rate']:.2f}",
         f"- avg_iterations: {metrics['avg_iterations']:.2f}",
+        f"- avg_tokens: {metrics['avg_tokens']:.2f}",
+        f"- avg_duration_seconds: {metrics['avg_duration_seconds']:.2f}",
+        f"- patch_apply_success_rate: {metrics['patch_apply_success_rate']:.2f}",
+        f"- retry_success_rate: {metrics['retry_success_rate']:.2f}",
+        f"- prompt_tokens_total: {metrics['prompt_tokens_total']}",
+        f"- completion_tokens_total: {metrics['completion_tokens_total']}",
+        f"- total_tokens_total: {metrics['total_tokens_total']}",
         "",
         "## Failure Categories",
     ]
@@ -222,12 +255,16 @@ def render_eval_report(result: MaintainerEvalRunResult) -> str:
                 f"- run_id: {task.run_id}",
                 f"- test_command: `{task.test_command or 'none'}`",
                 f"- retry_count: {task.retry_count}",
+                f"- node_duration_seconds: {task.node_duration_seconds:.2f}",
                 f"- repo_source: {task.repo_source or 'unknown'}",
                 f"- expected_behavior: {task.expected_behavior or 'none'}",
                 f"- changed_files: {', '.join(task.changed_files) if task.changed_files else 'none'}",
                 f"- expected_files: {', '.join(task.expected_files) if task.expected_files else 'none'}",
                 f"- failure_category: {task.failure_category or 'none'}",
                 f"- failure_summary: {task.failure_summary or 'none'}",
+                f"- prompt_tokens: {task.prompt_tokens}",
+                f"- completion_tokens: {task.completion_tokens}",
+                f"- total_tokens: {task.total_tokens}",
                 "",
             ]
         )
@@ -257,6 +294,8 @@ def _task_result_from_run(
     repo_source: str | None,
 ) -> MaintainerEvalTaskResult:
     state = run_result.state
+    usage = state.get("llm_usage_total", {}) or {}
+    node_duration = sum(float(value) for value in (state.get("node_timings", {}) or {}).values())
     return MaintainerEvalTaskResult(
         task_id=task.task_id,
         status=run_result.status,
@@ -270,6 +309,10 @@ def _task_result_from_run(
         failure_summary=str(state.get("failure_summary", "")),
         failure_category=_failure_category(state),
         retry_count=int(state.get("retry_count", 0)),
+        prompt_tokens=int(usage.get("prompt_tokens", 0)),
+        completion_tokens=int(usage.get("completion_tokens", 0)),
+        total_tokens=int(usage.get("total_tokens", 0)),
+        node_duration_seconds=round(node_duration, 3),
     )
 
 

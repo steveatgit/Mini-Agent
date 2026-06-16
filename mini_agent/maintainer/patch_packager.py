@@ -74,6 +74,8 @@ def render_run_summary(state: dict[str, Any]) -> str:
     node_timings = state.get("node_timings", {})
     model_call_counts = state.get("model_call_counts", {})
     total_model_calls = sum(int(count) for count in model_call_counts.values()) if model_call_counts else 0
+    llm_usage = state.get("llm_usage", {})
+    llm_usage_total = state.get("llm_usage_total", {})
     lines = [
         "# Run Summary",
         "",
@@ -116,6 +118,19 @@ def render_run_summary(state: dict[str, Any]) -> str:
         lines.extend(f"- {name}: {count}" for name, count in sorted(model_call_counts.items()))
     else:
         lines.append("- none")
+    lines.extend(
+        [
+            "",
+            "## LLM Token Usage",
+            f"- prompt_tokens: {llm_usage_total.get('prompt_tokens', 0)}",
+            f"- completion_tokens: {llm_usage_total.get('completion_tokens', 0)}",
+            f"- total_tokens: {llm_usage_total.get('total_tokens', 0)}",
+        ]
+    )
+    if llm_usage:
+        lines.extend(f"- {name}: {values.get('total_tokens', 0)} total" for name, values in sorted(llm_usage.items()))
+    else:
+        lines.append("- none recorded")
     lines.extend(
         [
             "",

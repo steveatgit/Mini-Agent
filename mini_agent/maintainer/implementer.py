@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from mini_agent.schema import Message
+from mini_agent.schema import LLMResponse, Message, TokenUsage
 
 from .prompts import PLAN_PATCH_PROMPT
 
@@ -28,6 +28,7 @@ class PatchApplyResult:
     stderr: str = ""
     error: str = ""
     modified_files: list[str] | None = None
+    usage: dict[str, int] | None = None
 
 
 def run_model_implementer(
@@ -44,7 +45,7 @@ def run_model_implementer(
 ) -> PatchApplyResult:
     """Ask an implementer model for a unified diff and apply it safely."""
 
-    response_text = _generate_sync(
+    response = _generate_sync(
         client,
         [
             Message(role="system", content=_implementer_system_prompt()),
@@ -62,10 +63,12 @@ def run_model_implementer(
             ),
         ],
     )
-    patch = extract_unified_diff(response_text)
+    patch = extract_unified_diff(str(response.content))
     if not patch:
-        return PatchApplyResult(success=False, error="Implementer response did not contain a unified diff.")
-    return apply_unified_diff(repo_path, patch, allowed_files=allowed_files)
+        return PatchApplyResult(success=False, error="Implementer response did not contain a unified diff.", usage=_usage_dict(response.usage))
+    result = apply_unified_diff(repo_path, patch, allowed_files=allowed_files)
+    result.usage = _usage_dict(response.usage)
+    return result
 
 
 def extract_unified_diff(text: str) -> str:
@@ -120,10 +123,9 @@ def files_touched_by_patch(patch: str) -> list[str]:
     return list(dict.fromkeys(path for path in files if path))
 
 
-def _generate_sync(client: ImplementerClient, messages: list[Message]) -> str:
-    async def _call() -> str:
-        response = await client.generate(messages=messages, tools=None)
-        return str(response.content)
+def _generate_sync(client: ImplementerClient, messages: list[Message]) -> LLMResponse:
+    async def _call() -> LLMResponse:
+        return await client.generate(messages=messages, tools=None)
 
     try:
         asyncio.get_running_loop()
@@ -182,3 +184,13 @@ def _disallowed_files(modified_files: list[str], allowed_files: list[str]) -> li
     if not allowed:
         return modified_files
     return [path for path in modified_files if path not in allowed]
+
+
+def _usage_dict(usage: TokenUsage | None) -> dict[str, int] | None:
+    if usage is None:
+        return None
+    return {
+        "prompt_tokens": usage.prompt_tokens,
+        "completion_tokens": usage.completion_tokens,
+        "total_tokens": usage.total_tokens,
+    }

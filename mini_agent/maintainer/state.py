@@ -23,6 +23,8 @@ class MaintainerState(TypedDict, total=False):
     implementation_notes: list[str]
     node_timings: dict[str, float]
     model_call_counts: dict[str, int]
+    llm_usage: dict[str, dict[str, int]]
+    llm_usage_total: dict[str, int]
 
     changed_files: list[str]
     diff: str

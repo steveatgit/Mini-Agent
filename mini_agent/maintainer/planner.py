@@ -10,7 +10,7 @@ from typing import Any, Protocol
 
 from pydantic import ValidationError
 
-from mini_agent.schema import Message
+from mini_agent.schema import LLMResponse, Message, TokenUsage
 
 from .prompts import CONTEXT_SELECT_PROMPT, ISSUE_TRIAGE_PROMPT, PLAN_PATCH_PROMPT, ContextSelectionPayload, IssueTriagePayload, PatchPlanPayload
 
@@ -24,20 +24,20 @@ def run_model_triage(
     client: PlannerClient,
     issue_text: str,
     repo_map: dict[str, Any],
-) -> tuple[IssueTriagePayload | None, str | None]:
+) -> tuple[IssueTriagePayload | None, str | None, dict[str, int] | None]:
     """Ask the planner model to classify the issue."""
 
     try:
-        response_text = _generate_sync(
+        response = _generate_sync(
             client,
             [
                 Message(role="system", content=f"{ISSUE_TRIAGE_PROMPT}\nReturn only valid JSON."),
                 Message(role="user", content=_triage_user_prompt(issue_text, repo_map)),
             ],
         )
-        return IssueTriagePayload.model_validate(_extract_json_object(response_text)), None
+        return IssueTriagePayload.model_validate(_extract_json_object(str(response.content))), None, _usage_dict(response.usage)
     except (RuntimeError, ValueError, ValidationError) as exc:
-        return None, str(exc)
+        return None, str(exc), None
 
 
 def run_model_context_select(
@@ -47,26 +47,26 @@ def run_model_context_select(
     repo_map: dict[str, Any],
     triage: dict[str, Any],
     max_files: int = 8,
-) -> tuple[ContextSelectionPayload | None, str | None]:
+) -> tuple[ContextSelectionPayload | None, str | None, dict[str, int] | None]:
     """Ask the planner model to select repo files, then keep only existing tracked files."""
 
     try:
-        response_text = _generate_sync(
+        response = _generate_sync(
             client,
             [
                 Message(role="system", content=f"{CONTEXT_SELECT_PROMPT}\nReturn only valid JSON."),
                 Message(role="user", content=_context_user_prompt(issue_text, repo_map, triage, max_files)),
             ],
         )
-        payload = ContextSelectionPayload.model_validate(_extract_json_object(response_text))
+        payload = ContextSelectionPayload.model_validate(_extract_json_object(str(response.content)))
     except (RuntimeError, ValueError, ValidationError) as exc:
-        return None, str(exc)
+        return None, str(exc), None
 
     repo_files = set(str(path) for path in repo_map.get("files", []))
     payload.files = [path for path in payload.files if path in repo_files][:max_files]
     if not payload.files:
-        return None, "Planner context selection did not contain existing repository files."
-    return payload, None
+        return None, "Planner context selection did not contain existing repository files.", _usage_dict(response.usage)
+    return payload, None, _usage_dict(response.usage)
 
 
 def run_model_patch_plan(
@@ -77,11 +77,11 @@ def run_model_patch_plan(
     selected_files: list[str],
     selected_context: str,
     test_command: str | None,
-) -> tuple[PatchPlanPayload | None, str | None]:
+) -> tuple[PatchPlanPayload | None, str | None, dict[str, int] | None]:
     """Ask the planner model for a structured patch plan."""
 
     try:
-        response_text = _generate_sync(
+        response = _generate_sync(
             client,
             [
                 Message(role="system", content=f"{PLAN_PATCH_PROMPT}\nReturn only valid JSON."),
@@ -97,13 +97,13 @@ def run_model_patch_plan(
                 ),
             ],
         )
-        payload = PatchPlanPayload.model_validate(_extract_json_object(response_text))
+        payload = PatchPlanPayload.model_validate(_extract_json_object(str(response.content)))
     except (RuntimeError, ValueError, ValidationError) as exc:
-        return None, str(exc)
+        return None, str(exc), None
 
     allowed = set(selected_files)
     payload.target_files = [path for path in payload.target_files if path in allowed] or list(selected_files)
-    return payload, None
+    return payload, None, _usage_dict(response.usage)
 
 
 def render_structured_plan(payload: PatchPlanPayload, test_command: str | None) -> str:
@@ -125,10 +125,9 @@ def render_structured_plan(payload: PatchPlanPayload, test_command: str | None) 
     return "\n".join(lines) + "\n"
 
 
-def _generate_sync(client: PlannerClient, messages: list[Message]) -> str:
-    async def _call() -> str:
-        response = await client.generate(messages=messages, tools=None)
-        return str(response.content)
+def _generate_sync(client: PlannerClient, messages: list[Message]) -> LLMResponse:
+    async def _call() -> LLMResponse:
+        return await client.generate(messages=messages, tools=None)
 
     try:
         asyncio.get_running_loop()
@@ -201,3 +200,13 @@ def _plan_user_prompt(
             selected_context,
         ]
     )
+
+
+def _usage_dict(usage: TokenUsage | None) -> dict[str, int] | None:
+    if usage is None:
+        return None
+    return {
+        "prompt_tokens": usage.prompt_tokens,
+        "completion_tokens": usage.completion_tokens,
+        "total_tokens": usage.total_tokens,
+    }

@@ -135,13 +135,15 @@ class MaintainerWorkflow:
 
     def issue_triage(self, state: MaintainerState) -> MaintainerState:
         planner_error = None
+        usage = None
         if self.planner_client is not None:
             self._increment_model_calls(state, "planner")
-            payload, planner_error = run_model_triage(
+            payload, planner_error, usage = run_model_triage(
                 client=self.planner_client,
                 issue_text=state.get("issue_text", ""),
                 repo_map=state.get("repo_map", {}),
             )
+            self._record_usage(state, "planner", usage)
             if payload is not None:
                 triage = payload.model_dump()
             else:
@@ -157,20 +159,23 @@ class MaintainerWorkflow:
                 "mode": "llm" if self.planner_client is not None and planner_error is None else "fallback",
                 "suspected_files": state["suspected_files"],
                 "error": planner_error,
+                "llm_usage": usage or {},
             }
         )
         return state
 
     def context_select(self, state: MaintainerState) -> MaintainerState:
         planner_error = None
+        usage = None
         if self.planner_client is not None:
             self._increment_model_calls(state, "planner")
-            payload, planner_error = run_model_context_select(
+            payload, planner_error, usage = run_model_context_select(
                 client=self.planner_client,
                 issue_text=state.get("issue_text", ""),
                 repo_map=state.get("repo_map", {}),
                 triage=state.get("triage", {}),
             )
+            self._record_usage(state, "planner", usage)
             selected_files = payload.files if payload is not None else []
         else:
             selected_files = []
@@ -188,16 +193,18 @@ class MaintainerWorkflow:
                 "mode": "llm" if self.planner_client is not None and planner_error is None else "fallback",
                 "selected_files": selected_files,
                 "error": planner_error,
+                "llm_usage": usage or {},
             }
         )
         return state
 
     def plan_patch(self, state: MaintainerState) -> MaintainerState:
         planner_error = None
+        usage = None
         plan_payload: dict[str, Any] | None = None
         if self.planner_client is not None:
             self._increment_model_calls(state, "planner")
-            payload, planner_error = run_model_patch_plan(
+            payload, planner_error, usage = run_model_patch_plan(
                 client=self.planner_client,
                 issue_text=state.get("issue_text", ""),
                 triage=state.get("triage", {}),
@@ -205,6 +212,7 @@ class MaintainerWorkflow:
                 selected_context=state.get("selected_context", ""),
                 test_command=state.get("test_command"),
             )
+            self._record_usage(state, "planner", usage)
             if payload is not None:
                 plan_payload = payload.model_dump()
                 plan = render_structured_plan(payload, state.get("test_command"))
@@ -240,6 +248,7 @@ class MaintainerWorkflow:
                 "test_command": state.get("test_command"),
                 "target_files": plan_payload.get("target_files", []),
                 "error": planner_error,
+                "llm_usage": usage or {},
             }
         )
         return state
@@ -264,6 +273,7 @@ class MaintainerWorkflow:
             else:
                 notes.append(f"Model patch failed: {result.error}")
             state["implementation_notes"] = notes
+            self._record_usage(state, "implementer", result.usage)
             self.artifacts.write_text("implementation.patch", result.patch)
             self.artifacts.append_trace(
                 {
@@ -273,6 +283,7 @@ class MaintainerWorkflow:
                     "modified_files": result.modified_files or [],
                     "error": result.error,
                     "stderr": result.stderr[-2000:] if result.stderr else "",
+                    "llm_usage": result.usage or {},
                 }
             )
             return state
@@ -313,7 +324,7 @@ class MaintainerWorkflow:
         state["retry_count"] = retry_count
         if self.verifier_client is not None:
             self._increment_model_calls(state, "verifier")
-        reflection = reflect_on_failure(
+        reflection, usage = reflect_on_failure(
             test_results=state.get("test_results", []),
             diff=git_diff(self.repo_path),
             plan=state.get("plan", ""),
@@ -322,6 +333,7 @@ class MaintainerWorkflow:
             verifier_client=self.verifier_client,
             has_implementer=self.implementer_client is not None,
         )
+        self._record_usage(state, "verifier", usage)
         state["reflection"] = reflection.model_dump()
         state["failure_category"] = reflection.failure_category
         state["failure_summary"] = reflection.summary
@@ -338,6 +350,7 @@ class MaintainerWorkflow:
                 "failure_category": reflection.failure_category,
                 "should_retry": reflection.should_retry,
                 "failure_summary": reflection.summary,
+                "llm_usage": usage or {},
             }
         )
         return state
@@ -351,7 +364,7 @@ class MaintainerWorkflow:
         self.artifacts.write_text("final.diff", diff + ("\n" if diff else ""))
         self.artifacts.write_text("final.patch", patch + ("\n" if patch else ""))
 
-        pr_description, pr_writer_error = render_model_pr_description(
+        pr_description, pr_writer_error, usage = render_model_pr_description(
             client=self.pr_writer_client,
             issue_text=state.get("issue_text", ""),
             changed_files=changed,
@@ -362,6 +375,7 @@ class MaintainerWorkflow:
         )
         if self.pr_writer_client is not None:
             self._increment_model_calls(state, "pr_writer")
+        self._record_usage(state, "pr_writer", usage)
         state["pr_description"] = pr_description
         self.artifacts.write_text("pr_description.md", pr_description)
 
@@ -377,6 +391,7 @@ class MaintainerWorkflow:
                 "status": state.get("verification_status"),
                 "pr_writer_mode": "llm" if self.pr_writer_client is not None and pr_writer_error is None else "fallback",
                 "error": pr_writer_error,
+                "llm_usage": usage or {},
             }
         )
         return state
@@ -398,6 +413,22 @@ class MaintainerWorkflow:
         counts = dict(state.get("model_call_counts", {}))
         counts[role] = int(counts.get(role, 0)) + 1
         state["model_call_counts"] = counts
+
+    def _record_usage(self, state: MaintainerState, role: str, usage: dict[str, int] | None) -> None:
+        if not usage:
+            return
+        usage_map = dict(state.get("llm_usage", {}))
+        existing = dict(usage_map.get(role, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}))
+        existing["prompt_tokens"] += int(usage.get("prompt_tokens", 0))
+        existing["completion_tokens"] += int(usage.get("completion_tokens", 0))
+        existing["total_tokens"] += int(usage.get("total_tokens", 0))
+        usage_map[role] = existing
+        state["llm_usage"] = usage_map
+        totals = dict(state.get("llm_usage_total", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}))
+        totals["prompt_tokens"] += int(usage.get("prompt_tokens", 0))
+        totals["completion_tokens"] += int(usage.get("completion_tokens", 0))
+        totals["total_tokens"] += int(usage.get("total_tokens", 0))
+        state["llm_usage_total"] = totals
 
     def _summarize_state(self, state: MaintainerState) -> dict[str, Any]:
         from .artifacts import summarize_state_for_json

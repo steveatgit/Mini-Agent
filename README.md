@@ -26,8 +26,9 @@ This project comes packed with features designed for a robust and intelligent ag
   - [ACP \& Zed Editor Integration(optional)](#acp--zed-editor-integrationoptional)
   - [Usage Examples](#usage-examples)
     - [Task Execution](#task-execution)
-    - [Using a Claude Skill (e.g., PDF Generation)](#using-a-claude-skill-eg-pdf-generation)
-    - [Web Search \& Summarization (MCP Tool)](#web-search--summarization-mcp-tool)
+  - [Using a Claude Skill (e.g., PDF Generation)](#using-a-claude-skill-eg-pdf-generation)
+  - [Web Search \& Summarization (MCP Tool)](#web-search--summarization-mcp-tool)
+  - [OSS Maintainer Workflow](#oss-maintainer-workflow)
   - [Testing](#testing)
     - [Quick Run](#quick-run)
     - [Test Coverage](#test-coverage)
@@ -258,6 +259,27 @@ Here are a few examples of what Mini Agent can do.
 *This demo shows the agent using its web search tool to find up-to-date information online and summarize it for the user.*
 
 ![Demo GIF 3: Web Search](docs/assets/demo3-web-search.gif "Web Search Demo")
+
+### OSS Maintainer Workflow
+
+Run the maintainer workflow against a local repository:
+
+```bash
+uv run python -m mini_agent.cli maintain \
+  --repo /path/to/repo \
+  --issue-file docs/issues/demo.md \
+  --test "uv run pytest tests/test_target.py"
+```
+
+Run the local eval suite with real fixture repositories:
+
+```bash
+uv run python -m mini_agent.cli maintain-eval \
+  --fixture-root evals/fixtures \
+  --tasks-dir evals/tasks
+```
+
+Artifacts are written under `artifacts/runs/<run-id>/` for `maintain` and under the eval output directory for `maintain-eval`, including `repo_map.md`, `plan.md`, `test_results.md`, `final.patch`, `pr_description.md`, `run_summary.md`, `state.json`, and `tool_trace.jsonl`.
 
 ## Testing
 

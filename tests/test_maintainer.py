@@ -24,47 +24,51 @@ from mini_agent.maintainer.pr_writer import render_model_pr_description
 from mini_agent.maintainer.prompts import ContextSelectionPayload, IssueTriagePayload
 from mini_agent.maintainer.reflector import classify_failure, reflect_on_failure
 from mini_agent.maintainer.repo_inspector import scan_repo
-from mini_agent.schema import LLMResponse
+from mini_agent.schema import LLMResponse, TokenUsage
 
 
 class FakePatchClient:
-    def __init__(self, patch: str):
+    def __init__(self, patch: str, usage: TokenUsage | None = None):
         self.patch = patch
+        self.usage = usage
         self.messages = []
 
     async def generate(self, messages, tools=None):
         self.messages.append(messages)
-        return LLMResponse(content=f"```diff\n{self.patch}\n```", finish_reason="stop")
+        return LLMResponse(content=f"```diff\n{self.patch}\n```", finish_reason="stop", usage=self.usage)
 
 
 class FakeReflectClient:
-    def __init__(self, payload: dict):
+    def __init__(self, payload: dict, usage: TokenUsage | None = None):
         self.payload = payload
+        self.usage = usage
         self.messages = []
 
     async def generate(self, messages, tools=None):
         self.messages.append(messages)
-        return LLMResponse(content=json.dumps(self.payload), finish_reason="stop")
+        return LLMResponse(content=json.dumps(self.payload), finish_reason="stop", usage=self.usage)
 
 
 class FakePlanClient:
-    def __init__(self, payloads: list[dict]):
+    def __init__(self, payloads: list[dict], usage: TokenUsage | None = None):
         self.payloads = list(payloads)
+        self.usage = usage
         self.messages = []
 
     async def generate(self, messages, tools=None):
         self.messages.append(messages)
-        return LLMResponse(content=json.dumps(self.payloads.pop(0)), finish_reason="stop")
+        return LLMResponse(content=json.dumps(self.payloads.pop(0)), finish_reason="stop", usage=self.usage)
 
 
 class FakePRClient:
-    def __init__(self, markdown: str):
+    def __init__(self, markdown: str, usage: TokenUsage | None = None):
         self.markdown = markdown
+        self.usage = usage
         self.messages = []
 
     async def generate(self, messages, tools=None):
         self.messages.append(messages)
-        return LLMResponse(content=self.markdown, finish_reason="stop")
+        return LLMResponse(content=self.markdown, finish_reason="stop", usage=self.usage)
 
 
 def _init_repo(path):
@@ -314,6 +318,69 @@ def test_run_maintainer_run_summary_includes_timings_and_model_counts(tmp_path):
     assert state["model_call_counts"]["pr_writer"] == 1
 
 
+def test_run_maintainer_records_llm_token_usage(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    usage = TokenUsage(prompt_tokens=11, completion_tokens=7, total_tokens=18)
+    planner = FakePlanClient(
+        [
+            {
+                "issue_type": "bug",
+                "summary": "add should support numeric strings",
+                "keywords": ["add", "numeric"],
+                "suspected_files": ["app.py", "tests/test_app.py"],
+                "acceptance_criteria": ["tests pass"],
+            },
+            {"files": ["app.py", "tests/test_app.py"], "rationale": "implementation and coverage"},
+            {
+                "target_files": ["app.py", "tests/test_app.py"],
+                "changes": ["Coerce add inputs before summing."],
+                "test_strategy": ["Run the provided pytest command."],
+                "risks": ["Low risk."],
+            },
+        ],
+        usage=usage,
+    )
+    pr_writer = FakePRClient(
+        "# PR Description\n\n## Summary\n- Model generated summary.\n",
+        usage=usage,
+    )
+
+    result = run_maintainer(
+        repo,
+        "app.py add should support numeric strings\n\nExpected: tests pass.",
+        test_command="python -m pytest tests/test_app.py",
+        workspace_dir=tmp_path,
+        run_id="usage-demo",
+        use_langgraph=False,
+        planner_client=planner,
+        implementer_client=FakePatchClient(
+            """diff --git a/app.py b/app.py
+--- a/app.py
++++ b/app.py
+@@ -1,2 +1,2 @@
+ def add(a, b):
+-    return a + b
++    return int(a) + int(b)
+""",
+            usage=usage,
+        ),
+        pr_writer_client=pr_writer,
+    )
+
+    run_dir = tmp_path / "artifacts" / "runs" / "usage-demo"
+    summary = (run_dir / "run_summary.md").read_text(encoding="utf-8")
+
+    assert result.status == "pass"
+    assert result.state["llm_usage_total"]["total_tokens"] == 90
+    assert result.state["llm_usage"]["planner"]["total_tokens"] == 54
+    assert result.state["llm_usage"]["implementer"]["total_tokens"] == 18
+    assert result.state["llm_usage"]["pr_writer"]["total_tokens"] == 18
+    assert "## LLM Token Usage" in summary
+    assert "total_tokens: 90" in summary
+
+
 def test_summarize_state_for_json_truncates_large_payloads():
     payload = {
         "stdout": "x" * 5000,
@@ -329,7 +396,7 @@ def test_summarize_state_for_json_truncates_large_payloads():
 
 
 def test_pr_writer_fallback_includes_rollback_guidance():
-    markdown, error = render_model_pr_description(
+    markdown, error, usage = render_model_pr_description(
         client=None,
         issue_text="fix add",
         changed_files=["app.py"],
@@ -339,13 +406,14 @@ def test_pr_writer_fallback_includes_rollback_guidance():
     )
 
     assert error is None
+    assert usage is None
     assert "Risk and Rollback" in markdown
     assert "Revert the patch" in markdown
 
 
 def test_model_context_select_filters_to_existing_repo_files():
     client = FakePlanClient([{"files": ["/app.py", "../bad.py", "missing.py", "tests/test_app.py"], "rationale": "focused"}])
-    payload, error = run_model_context_select(
+    payload, error, usage = run_model_context_select(
         client=client,
         issue_text="fix app",
         repo_map={"files": ["app.py", "tests/test_app.py"]},
@@ -353,6 +421,7 @@ def test_model_context_select_filters_to_existing_repo_files():
     )
 
     assert error is None
+    assert usage is None
     assert payload is not None
     assert payload.files == ["app.py", "tests/test_app.py"]
 
@@ -411,7 +480,7 @@ def test_reflect_on_failure_uses_verifier_payload():
         }
     )
 
-    reflection = reflect_on_failure(
+    reflection, usage = reflect_on_failure(
         test_results=[{"status": "fail", "exit_code": 1, "summary": "missing helper"}],
         diff="",
         plan="plan",
@@ -421,6 +490,7 @@ def test_reflect_on_failure_uses_verifier_payload():
         has_implementer=True,
     )
 
+    assert usage is None
     assert reflection.should_retry is True
     assert reflection.failure_category == "context_missing"
     assert client.messages
@@ -725,6 +795,10 @@ def test_render_eval_report_includes_failure_and_repo_source(tmp_path):
                 failure_summary="Command failed with exit code 1 and no output.",
                 failure_category="test_failed",
                 retry_count=0,
+                prompt_tokens=11,
+                completion_tokens=7,
+                total_tokens=18,
+                node_duration_seconds=0.42,
             )
         ],
     )
@@ -735,3 +809,6 @@ def test_render_eval_report_includes_failure_and_repo_source(tmp_path):
     assert "repo_source: /tmp/fixtures/failure-001/repo" in report
     assert "failure_summary: Command failed with exit code 1 and no output." in report
     assert "expected_behavior: The verification step should fail" in report
+    assert "avg_tokens: 18.00" in report
+    assert "avg_duration_seconds: 0.42" in report
+    assert "total_tokens_total: 18" in report
