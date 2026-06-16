@@ -1,0 +1,2 @@
+src/slug.py
+tests/test_slug.py

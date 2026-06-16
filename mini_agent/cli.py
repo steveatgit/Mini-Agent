@@ -483,6 +483,17 @@ Examples:
         default=120,
         help="Timeout in seconds for the verification command.",
     )
+    maintain_parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=0,
+        help="Maximum verification failure reflection retries. Defaults to 0 for deterministic MVP runs.",
+    )
+    maintain_parser.add_argument(
+        "--no-langgraph",
+        action="store_true",
+        help="Run the maintainer workflow fallback directly instead of LangGraph.",
+    )
 
     return parser.parse_args()
 
@@ -1188,6 +1199,8 @@ def run_maintainer_cli(args: argparse.Namespace, workspace_dir: Path) -> None:
         run_id=args.run_id,
         constraints=args.constraint,
         verification_timeout=args.verification_timeout,
+        max_retries=args.max_retries,
+        use_langgraph=not args.no_langgraph,
     )
     print(f"{Colors.GREEN}✅ Maintainer run complete{Colors.RESET}")
     print(f"{Colors.DIM}Status: {result.status}{Colors.RESET}")

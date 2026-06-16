@@ -6,20 +6,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .artifacts import ArtifactWriter, make_run_id
-from .patch_packager import render_plan, render_pr_description, render_run_summary
-from .repo_inspector import (
-    changed_files,
-    create_patch,
-    ensure_repo,
-    git_diff,
-    render_repo_map,
-    render_selected_context,
-    scan_repo,
-    select_context_files,
-    triage_issue,
-)
+from .graph import MaintainerWorkflow
+from .repo_inspector import ensure_repo
 from .state import MaintainerState
-from .verifier import render_test_results, run_verification
 
 
 @dataclass
@@ -41,6 +30,8 @@ def run_maintainer(
     run_id: str | None = None,
     constraints: list[str] | None = None,
     verification_timeout: int = 120,
+    max_retries: int = 0,
+    use_langgraph: bool = True,
 ) -> MaintainerRunResult:
     """Run the local maintainer workflow and write artifacts."""
 
@@ -58,77 +49,13 @@ def run_maintainer(
         "retry_count": 0,
         "implementation_notes": [],
     }
-    artifacts.write_json(
-        "input.json",
-        {
-            "repo_path": str(repo),
-            "issue_text": issue_text,
-            "test_command": test_command,
-            "constraints": constraints or [],
-        },
+    workflow = MaintainerWorkflow(
+        repo,
+        artifacts,
+        verification_timeout=verification_timeout,
+        max_retries=max_retries,
+        use_langgraph=use_langgraph,
     )
-
-    artifacts.append_trace({"node": "bootstrap_run", "repo_path": str(repo), "run_id": run_id})
-
-    repo_map = scan_repo(repo)
-    state["repo_map"] = repo_map
-    if not state.get("test_command"):
-        state["test_command"] = repo_map.get("detected_test_command")
-    artifacts.write_text("repo_map.md", render_repo_map(repo_map))
-    artifacts.append_trace({"node": "repo_scan", "file_count": len(repo_map.get("files", []))})
-
-    triage = triage_issue(issue_text, repo_map)
-    state["triage"] = triage
-    selected_files = select_context_files(issue_text, repo_map)
-    state["suspected_files"] = selected_files
-    context = render_selected_context(repo, selected_files)
-    state["selected_context"] = context
-    artifacts.write_json("triage.json", triage)
-    artifacts.write_text("selected_context.md", context)
-    artifacts.append_trace({"node": "issue_triage", "suspected_files": selected_files})
-
-    plan = render_plan(issue_text, triage, selected_files, state.get("test_command"))
-    state["plan"] = plan
-    artifacts.write_text("plan.md", plan)
-    artifacts.append_trace({"node": "plan_patch", "test_command": state.get("test_command")})
-
-    state["implementation_notes"] = [
-        "Deterministic MVP prepared repository context and artifacts.",
-        "Automatic implementation model is not enabled in this runner yet.",
-    ]
-    artifacts.append_trace({"node": "implement_patch", "status": "skipped"})
-
-    test_result = run_verification(repo, state.get("test_command"), timeout=verification_timeout)
-    state["test_results"] = [test_result]
-    state["verification_status"] = test_result["status"]
-    state["failure_summary"] = "" if test_result["status"] == "pass" else test_result["summary"]
-    artifacts.write_text("test_results.md", render_test_results(state["test_results"]))
-    artifacts.append_trace(
-        {
-            "node": "run_verification",
-            "command": test_result.get("command"),
-            "status": test_result.get("status"),
-            "exit_code": test_result.get("exit_code"),
-        }
-    )
-
-    diff = git_diff(repo)
-    patch = create_patch(repo)
-    changed = changed_files(repo)
-    state["diff"] = diff
-    state["changed_files"] = changed
-    artifacts.write_text("final.diff", diff + ("\n" if diff else ""))
-    artifacts.write_text("final.patch", patch + ("\n" if patch else ""))
-
-    pr_description = render_pr_description(issue_text, changed, state["test_results"])
-    state["pr_description"] = pr_description
-    artifacts.write_text("pr_description.md", pr_description)
-
-    summary = render_run_summary(state)
-    state["final_report"] = summary
-    state["artifacts_dir"] = str(artifacts.run_dir)
-    artifacts.write_text("run_summary.md", summary)
-    artifacts.write_json("state.json", state)
-    artifacts.append_trace({"node": "package_artifacts", "changed_files": changed, "status": state["verification_status"]})
+    state = workflow.run(state)
 
     return MaintainerRunResult(run_id=run_id, run_dir=artifacts.run_dir, status=state["verification_status"], state=state)
