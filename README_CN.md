@@ -25,9 +25,10 @@
       - [🔧 开发模式](#-开发模式)
   - [ACP \& Zed Editor 集成（可选）](#acp--zed-editor-集成可选)
   - [使用示例](#使用示例)
-    - [任务执行](#任务执行)
-    - [使用 Claude Skill（例如：PDF 生成）](#使用-claude-skill例如pdf-生成)
-    - [网页搜索与摘要（MCP 工具）](#网页搜索与摘要mcp-工具)
+  - [任务执行](#任务执行)
+  - [使用 Claude Skill（例如：PDF 生成）](#使用-claude-skill例如pdf-生成)
+  - [网页搜索与摘要（MCP 工具）](#网页搜索与摘要mcp-工具)
+  - [OSS Maintainer 工作流](#oss-maintainer-工作流)
   - [测试](#测试)
     - [快速运行](#快速运行)
     - [测试覆盖范围](#测试覆盖范围)
@@ -258,6 +259,37 @@ Mini Agent 支持 [Agent Communication Protocol (ACP)](https://github.com/modelc
 *此演示展示了 Agent 如何使用其网页搜索工具在线查找最新信息，并为用户进行总结。*
 
 ![演示动图 3: 网页搜索](docs/assets/demo3-web-search.gif "网页搜索演示")
+
+### OSS Maintainer 工作流
+
+在本地仓库上运行 maintainer 工作流：
+
+```bash
+uv run python -m mini_agent.cli maintain \
+  --repo /path/to/repo \
+  --issue-file docs/issues/demo.md \
+  --test "uv run pytest tests/test_target.py"
+```
+
+运行带真实 fixture 仓库的本地评测：
+
+```bash
+uv run python -m mini_agent.cli maintain-eval \
+  --fixture-root evals/fixtures \
+  --tasks-dir evals/tasks
+```
+
+`maintain` 的产物默认写到 `artifacts/runs/<run-id>/`，`maintain-eval` 的产物写到你指定的输出目录下。常见文件包括：
+
+- `repo_map.md`
+- `plan.md`
+- `test_results.md`
+- `final.diff`
+- `final.patch`
+- `pr_description.md`
+- `run_summary.md`
+- `state.json`
+- `tool_trace.jsonl`
 
 
 ## 测试

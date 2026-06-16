@@ -398,6 +398,8 @@ class MaintainerWorkflow:
 
     def _timed_node(self, name: str, fn):
         def wrapper(state: MaintainerState) -> MaintainerState:
+            run_id = state.get("run_id", "maintain")
+            print(f"[maintainer][{run_id}][{name}] start", flush=True)
             start = time.monotonic()
             try:
                 return fn(state)
@@ -406,6 +408,7 @@ class MaintainerWorkflow:
                 timings = dict(state.get("node_timings", {}))
                 timings[name] = round(float(timings.get(name, 0.0)) + duration, 3)
                 state["node_timings"] = timings
+                print(f"[maintainer][{run_id}][{name}] done duration={duration:.3f}s", flush=True)
 
         return wrapper
 

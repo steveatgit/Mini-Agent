@@ -580,7 +580,7 @@ def test_run_eval_tasks_writes_report_and_results(tmp_path):
     assert (tmp_path / "eval-out" / "eval_results.json").exists()
 
 
-def test_run_maintainer_eval_cli(tmp_path):
+def test_run_maintainer_eval_cli(tmp_path, capsys):
     repo = tmp_path / "repo"
     repo.mkdir()
     _init_repo(repo)
@@ -604,9 +604,14 @@ def test_run_maintainer_eval_cli(tmp_path):
     )
 
     run_maintainer_eval_cli(args, tmp_path)
+    output = capsys.readouterr().out
 
     assert (tmp_path / "cli-eval-out" / "eval_report.md").exists()
     assert (tmp_path / "cli-eval-out" / "eval_results.json").exists()
+    assert "[maintain-eval] start" in output
+    assert "[maintain-eval][task-001] start" in output
+    assert "[maintainer][eval-task-001][bootstrap_run] start" in output
+    assert "[maintainer][verification] start command=python -m pytest tests/test_app.py" in output
 
 
 def test_run_maintainer_eval_cli_with_fixture_root(tmp_path):

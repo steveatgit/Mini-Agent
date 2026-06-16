@@ -30,12 +30,13 @@ def run_verification(repo_path: Path, command: str | None, timeout: int = 120) -
             "summary": "No test command was provided or detected.",
         }
     _validate_command(command)
+    print(f"[maintainer][verification] start command={command}", flush=True)
     start = time.monotonic()
     try:
         result = subprocess.run(command, cwd=repo_path, shell=True, capture_output=True, text=True, timeout=timeout)
         duration = time.monotonic() - start
         status = "pass" if result.returncode == 0 else "fail"
-        return {
+        payload = {
             "command": command,
             "exit_code": result.returncode,
             "stdout": _truncate(result.stdout),
@@ -44,9 +45,14 @@ def run_verification(repo_path: Path, command: str | None, timeout: int = 120) -
             "status": status,
             "summary": summarize_result(status, result.stdout, result.stderr, result.returncode),
         }
+        print(
+            f"[maintainer][verification] done status={status} exit_code={result.returncode} duration={payload['duration_seconds']:.3f}s",
+            flush=True,
+        )
+        return payload
     except subprocess.TimeoutExpired as exc:
         duration = time.monotonic() - start
-        return {
+        payload = {
             "command": command,
             "exit_code": None,
             "stdout": _truncate(exc.stdout or ""),
@@ -55,6 +61,8 @@ def run_verification(repo_path: Path, command: str | None, timeout: int = 120) -
             "status": "timeout",
             "summary": f"Verification timed out after {timeout} seconds.",
         }
+        print(f"[maintainer][verification] done status=timeout duration={payload['duration_seconds']:.3f}s", flush=True)
+        return payload
 
 
 def render_test_results(results: list[dict[str, Any]]) -> str:

@@ -1275,6 +1275,10 @@ def run_maintainer_cli(args: argparse.Namespace, workspace_dir: Path) -> None:
     if not issue_file.is_absolute():
         issue_file = Path.cwd() / issue_file
     issue_text = issue_file.read_text(encoding="utf-8")
+    print(
+        f"[maintain] start repo={args.repo} issue_file={issue_file} test={args.test_command or 'none'} run_id={args.run_id or 'auto'}",
+        flush=True,
+    )
     result = run_maintainer(
         repo_path=args.repo,
         issue_text=issue_text,
@@ -1303,6 +1307,10 @@ def run_maintainer_eval_cli(args: argparse.Namespace, workspace_dir: Path) -> No
     roles = _maintainer_llm_roles(args.llm_plan, args.llm_implement, args.llm_reflect, args.llm_pr)
     if not args.repo and not args.fixture_root:
         raise ValueError("maintain-eval requires either --repo or --fixture-root")
+    print(
+        f"[maintain-eval] start repo={args.repo or 'fixture-root'} tasks_dir={args.tasks_dir} output_dir={args.output_dir or 'default'} fixture_root={args.fixture_root or 'none'}",
+        flush=True,
+    )
     result = run_eval_tasks(
         repo_path=args.repo,
         tasks_dir=args.tasks_dir,

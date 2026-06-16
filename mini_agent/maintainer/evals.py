@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 import tempfile
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -193,6 +194,12 @@ def run_eval_tasks(
     task_results: list[MaintainerEvalTaskResult] = []
     for task in tasks:
         test_command = test_command_override or task.test_command
+        task_repo_ref = task.repo_ref or task.task_id
+        print(
+            f"[maintain-eval][{task.task_id}] start repo_ref={task_repo_ref} test={test_command or 'none'}",
+            flush=True,
+        )
+        task_start = time.monotonic()
         with _resolve_task_repo(task, repo, fixture_root_path, out_dir) as task_repo:
             run_result = run_maintainer(
                 task_repo,
@@ -209,11 +216,18 @@ def run_eval_tasks(
                 verifier_client=verifier_client,
                 pr_writer_client=pr_writer_client,
             )
-        task_results.append(_task_result_from_run(task, run_result, test_command, repo_source=_repo_source_label(task, repo, fixture_root_path)))
+        task_result = _task_result_from_run(task, run_result, test_command, repo_source=_repo_source_label(task, repo, fixture_root_path))
+        task_results.append(task_result)
+        task_duration = time.monotonic() - task_start
+        print(
+            f"[maintain-eval][{task.task_id}] done status={task_result.status} retries={task_result.retry_count} duration={task_duration:.2f}s",
+            flush=True,
+        )
 
     result = MaintainerEvalRunResult(tasks_dir=tasks_root, repo_path=repo, output_dir=out_dir, task_results=task_results)
     (out_dir / "eval_results.json").write_text(json.dumps(result.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
     (out_dir / "eval_report.md").write_text(render_eval_report(result), encoding="utf-8")
+    print(f"[maintain-eval] report={out_dir / 'eval_report.md'} results={out_dir / 'eval_results.json'}", flush=True)
     return result
 
 
