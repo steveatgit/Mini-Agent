@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .artifacts import ArtifactWriter
+from .implementer import ImplementerClient, run_model_implementer
 from .patch_packager import render_plan, render_pr_description, render_run_summary
 from .repo_inspector import (
     changed_files,
@@ -32,12 +33,14 @@ class MaintainerWorkflow:
         verification_timeout: int = 120,
         max_retries: int = 0,
         use_langgraph: bool = True,
+        implementer_client: ImplementerClient | None = None,
     ):
         self.repo_path = repo_path
         self.artifacts = artifacts
         self.verification_timeout = verification_timeout
         self.max_retries = max_retries
         self.use_langgraph = use_langgraph
+        self.implementer_client = implementer_client
 
     def run(self, state: MaintainerState) -> MaintainerState:
         """Run via LangGraph when installed, otherwise use the deterministic fallback."""
@@ -150,6 +153,37 @@ class MaintainerWorkflow:
         return state
 
     def implement_patch(self, state: MaintainerState) -> MaintainerState:
+        if self.implementer_client is not None:
+            result = run_model_implementer(
+                client=self.implementer_client,
+                repo_path=self.repo_path,
+                issue_text=state.get("issue_text", ""),
+                triage=state.get("triage", {}),
+                selected_context=state.get("selected_context", ""),
+                plan=state.get("plan", ""),
+                allowed_files=state.get("suspected_files", []),
+                current_diff=git_diff(self.repo_path),
+                failure_summary=state.get("failure_summary", ""),
+            )
+            notes = list(state.get("implementation_notes", []))
+            if result.success:
+                notes.append(f"Applied model patch touching: {', '.join(result.modified_files or []) or 'unknown'}")
+            else:
+                notes.append(f"Model patch failed: {result.error}")
+            state["implementation_notes"] = notes
+            self.artifacts.write_text("implementation.patch", result.patch)
+            self.artifacts.append_trace(
+                {
+                    "node": "implement_patch",
+                    "status": "applied" if result.success else "failed",
+                    "retry_count": state.get("retry_count", 0),
+                    "modified_files": result.modified_files or [],
+                    "error": result.error,
+                    "stderr": result.stderr[-2000:] if result.stderr else "",
+                }
+            )
+            return state
+
         notes = list(state.get("implementation_notes", []))
         if not notes:
             notes.extend(

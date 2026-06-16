@@ -4,7 +4,19 @@ from types import SimpleNamespace
 from mini_agent.cli import run_maintainer_cli, run_maintainer_eval_cli
 from mini_agent.maintainer import run_maintainer
 from mini_agent.maintainer.evals import load_eval_task, load_eval_tasks, run_eval_tasks
+from mini_agent.maintainer.implementer import apply_unified_diff, extract_unified_diff
 from mini_agent.maintainer.prompts import ContextSelectionPayload, IssueTriagePayload
+from mini_agent.schema import LLMResponse
+
+
+class FakePatchClient:
+    def __init__(self, patch: str):
+        self.patch = patch
+        self.messages = []
+
+    async def generate(self, messages, tools=None):
+        self.messages.append(messages)
+        return LLMResponse(content=f"```diff\n{self.patch}\n```", finish_reason="stop")
 
 
 def _init_repo(path):
@@ -54,6 +66,7 @@ def test_run_maintainer_cli_reads_issue_file(tmp_path):
         verification_timeout=120,
         max_retries=0,
         no_langgraph=True,
+        llm_implement=False,
     )
 
     run_maintainer_cli(args, tmp_path)
@@ -81,6 +94,63 @@ def test_run_maintainer_fallback_workflow_writes_trace(tmp_path):
     assert result.status == "pass"
     assert '"node": "context_select"' in trace
     assert '"node": "package_artifacts"' in trace
+
+
+def test_run_maintainer_with_fake_implementer_applies_patch(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    patch = """diff --git a/app.py b/app.py
+--- a/app.py
++++ b/app.py
+@@ -1,2 +1,2 @@
+ def add(a, b):
+-    return a + b
++    return int(a) + int(b)
+"""
+
+    result = run_maintainer(
+        repo,
+        "app.py add should coerce numeric strings\n\nExpected: tests pass.",
+        test_command="python -m pytest tests/test_app.py",
+        workspace_dir=tmp_path,
+        run_id="llm-demo",
+        use_langgraph=False,
+        implementer_client=FakePatchClient(patch),
+    )
+
+    assert result.status == "pass"
+    assert "int(a) + int(b)" in (repo / "app.py").read_text(encoding="utf-8")
+    trace = (tmp_path / "artifacts" / "runs" / "llm-demo" / "tool_trace.jsonl").read_text(encoding="utf-8")
+    assert '"status": "applied"' in trace
+
+
+def test_patch_apply_rejects_files_outside_plan(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    patch = """diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -1 +1 @@
+-# Demo
++# Changed
+"""
+
+    result = apply_unified_diff(repo, patch, allowed_files=["app.py"])
+
+    assert not result.success
+    assert "outside the allowed plan" in result.error
+    assert (repo / "README.md").read_text(encoding="utf-8") == "# Demo\n"
+
+
+def test_extract_unified_diff_from_fenced_model_response():
+    text = "Here is the patch:\n```diff\ndiff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-a\n+b\n```"
+
+    patch = extract_unified_diff(text)
+
+    assert patch.startswith("diff --git")
+    assert patch.endswith("\n")
 
 
 def test_prompt_payloads_clean_model_outputs():
@@ -145,6 +215,7 @@ def test_run_maintainer_eval_cli(tmp_path):
         verification_timeout=120,
         max_retries=0,
         no_langgraph=True,
+        llm_implement=False,
     )
 
     run_maintainer_eval_cli(args, tmp_path)

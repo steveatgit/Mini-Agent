@@ -643,20 +643,157 @@ mini-agent maintain --repo /tmp/demo-repo --issue-file issue.md --test "pytest"
 
 优先级从上到下：
 
-- [ ] 新增 `mini_agent/maintainer/` 包。
-- [ ] 定义 `MaintainerState`。
-- [ ] 新增 artifacts 写入工具。
-- [ ] 新增 repo scan 节点。
-- [ ] 新增 issue triage prompt 和 pydantic 输出。
-- [ ] 新增 context select 节点。
-- [ ] 新增 maintain CLI 子命令。
-- [ ] 接入 OpenRouter 默认配置示例。
-- [ ] 新增 verification 节点和测试日志摘要。
-- [ ] 生成 `final.patch`、`pr_description.md`、`run_summary.md`。
-- [ ] 加 3 个最小 fixture 任务。
+- [x] 新增 `mini_agent/maintainer/` 包。
+- [x] 定义 `MaintainerState`。
+- [x] 新增 artifacts 写入工具。
+- [x] 新增 repo scan 节点。
+- [x] 新增 issue triage prompt 和 pydantic 输出。
+- [x] 新增 context select 节点。
+- [x] 新增 maintain CLI 子命令。
+- [x] 接入 OpenRouter 默认配置示例。
+- [x] 新增 verification 节点和测试日志摘要。
+- [x] 生成 `final.patch`、`pr_description.md`、`run_summary.md`。
+- [x] 加 3 个最小 fixture 任务。
 - [ ] 写面试 demo 脚本。
 
-## 16. 参考资料
+当前 MVP 已经能完成 deterministic runner、LangGraph/fallback workflow、artifacts、`maintain` CLI、`maintain-eval` CLI 和基础 eval report。下一阶段重点不再是补目录结构，而是把“规则版节点”升级成“模型驱动但可控的补丁闭环”。
+
+## 16. 第二批开发任务清单：模型补丁闭环
+
+目标：让 Agent 从“生成计划和报告”升级为“能自动修改代码、运行测试、失败后反思并重试”。
+
+### P0：LLM 节点接入
+
+- [x] 新增 `mini_agent/maintainer/llm_roles.py`，复用 `tools.maintainer_models` 创建 planner、implementer、verifier、pr_writer client。
+- [ ] 在 `issue_triage` 中增加 LLM 模式，输出 `IssueTriagePayload`，失败时回退规则版 triage。
+- [ ] 在 `context_select` 中增加 LLM 模式，输出 `ContextSelectionPayload`，并校验文件必须存在于 repo。
+- [ ] 在 `plan_patch` 中增加 LLM 模式，输出 `PatchPlanPayload`，并写入结构化 `plan.json`。
+- [ ] 增加 CLI 开关：
+  - `--llm-plan`
+  - `--llm-implement`（已完成）
+  - `--llm-reflect`
+  - `--llm-pr`
+  - `--model-profile openrouter-free|local|custom`
+
+### P0：实现 `implement_patch`
+
+- [x] 新增 `mini_agent/maintainer/implementer.py`。
+- [x] 给 implementer 输入：issue、triage、selected_context、plan、当前 diff、失败反思。
+- [x] implementer 第一版只允许返回 unified diff，不直接写文件。
+- [x] 使用 `git apply --check` 校验 patch。
+- [x] 使用 `git apply` 应用 patch。
+- [x] patch 失败时把错误写入 `tool_trace.jsonl` 和 `implementation_notes`。
+- [partial] 限制 patch 修改文件必须属于计划文件或有新增理由。
+- [ ] 对新增文件、删除文件、二进制文件分别做策略限制。
+
+### P0：失败反思和重试
+
+- [ ] 在 `reflect_failure` 中接入 verifier_model。
+- [ ] 输出 `FailureReflectionPayload`。
+- [ ] 将失败分类为：
+  - `test_failed`
+  - `test_timeout`
+  - `dependency_missing`
+  - `patch_apply_failed`
+  - `context_missing`
+  - `model_format_error`
+- [ ] 根据分类决定是否重试。
+- [ ] 重试时把失败摘要和当前 diff 注入 implementer。
+- [ ] 默认 `max_retries=2`，CLI 可覆盖。
+
+### P1：PR 文案和最终报告升级
+
+- [ ] 在 `package_artifacts` 中接入 pr_writer_model。
+- [ ] 生成 `pr_description.md` 时包含：
+  - 问题背景
+  - 关键改动
+  - 验证方式
+  - 风险和回滚建议
+- [ ] 生成 `run_summary.md` 时包含节点耗时、测试耗时、模型调用次数。
+- [ ] 输出 `state.json` 时过滤过长日志，只保留摘要和 artifact 路径。
+
+### P1：可观测性和 token 统计
+
+- [ ] 在 `tool_trace.jsonl` 中记录每个节点：
+  - node name
+  - started_at / ended_at
+  - duration_ms
+  - input summary
+  - output summary
+  - error
+- [ ] 记录 LLM request/response 的 token usage。
+- [ ] 在 eval report 中增加：
+  - `avg_tokens`
+  - `avg_duration_seconds`
+  - `patch_apply_success_rate`
+  - `retry_success_rate`
+
+## 17. 第三批开发任务清单：安全、评测和展示
+
+目标：让项目适合面试展示和持续迭代，不只是单次 demo。
+
+### P0：Sandbox 和 Git 安全边界
+
+- [ ] 新增 `mini_agent/maintainer/sandbox.py`。
+- [ ] 所有命令必须在 repo 根目录内运行。
+- [ ] 拒绝危险命令：
+  - `rm -rf /`
+  - `sudo`
+  - `chmod -R 777`
+  - `curl ... | sh`
+  - `wget ... | sh`
+  - `git push`
+  - 修改 `.git/` 内部文件
+- [ ] verification command 默认禁止网络安装命令。
+- [ ] 支持 `--allow-network-install` 显式打开安装类命令。
+- [ ] 每次运行开始记录 baseline `git status --short`。
+- [ ] 每次运行结束输出本次新增/修改/删除文件。
+- [ ] 新增 `--restore-on-failure`，失败后自动回滚本轮改动。
+
+### P0：真实 eval fixture
+
+- [ ] 新增 `evals/fixtures/`，放 3 个小型可复制 repo。
+- [ ] 每个 fixture 都要有：
+  - 初始代码
+  - failing test
+  - issue.md
+  - test_command.txt
+  - expected_files.txt
+  - expected_behavior.md
+- [ ] 将当前 `evals/tasks/*` 从“任务描述”升级为可实际运行的 fixture 或 repo_ref。
+- [ ] 新增 `maintain-eval --fixture-root`，自动复制 fixture 到临时目录再运行。
+- [ ] eval 结束后保留每个任务的 run artifacts。
+- [ ] 准备至少 1 个失败案例，报告中能解释失败原因。
+
+### P1：Demo 和文档
+
+- [ ] 新增 `docs/OSS_MAINTAINER_DEMO_CN.md`。
+- [ ] 写 3 分钟面试 demo 脚本：
+  - 项目目标
+  - workflow 图
+  - 一次成功修复
+  - 一次失败反思
+  - eval report
+- [ ] README 增加 `maintain` 和 `maintain-eval` 使用示例。
+- [ ] README 增加 artifacts 示例目录。
+- [ ] 增加一张架构图或 Mermaid 图。
+- [ ] 录制 demo gif 或 asciinema。
+
+### P1：工程质量
+
+- [ ] 给 maintainer workflow 增加单元测试：
+  - repo scan
+  - triage payload fallback
+  - context selection
+  - patch apply success/failure
+  - verification timeout
+  - reflect retry route
+- [ ] 给 CLI 增加解析测试。
+- [ ] 给 eval report 增加 snapshot 测试。
+- [ ] CI 中跳过需要真实 API key 的 LLM 集成测试。
+- [ ] 将需要真实模型的测试标记为 `@pytest.mark.integration`。
+
+## 18. 参考资料
 
 - Mini-Agent 当前仓库：本项目 README 和 `INTERVIEW_PREP_CN.md`。
 - OpenRouter Quickstart：https://openrouter.ai/docs/quickstart

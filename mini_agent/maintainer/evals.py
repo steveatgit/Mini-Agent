@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .implementer import ImplementerClient
 from .runner import MaintainerRunResult, run_maintainer
 
 
@@ -132,6 +133,7 @@ def run_eval_tasks(
     max_retries: int = 0,
     use_langgraph: bool = True,
     test_command_override: str | None = None,
+    implementer_client: ImplementerClient | None = None,
 ) -> MaintainerEvalRunResult:
     """Run maintainer workflow over all local eval tasks."""
 
@@ -155,6 +157,7 @@ def run_eval_tasks(
             verification_timeout=verification_timeout,
             max_retries=max_retries,
             use_langgraph=use_langgraph,
+            implementer_client=implementer_client,
         )
         task_results.append(_task_result_from_run(task, run_result, test_command))
 

@@ -48,6 +48,7 @@ from mini_agent.event_trace import (
 from mini_agent.event_trace_runner import create_trace_llm_client, execute_event_trace, resolve_workspace_output_path, source_from_arg
 from mini_agent.maintainer import run_maintainer
 from mini_agent.maintainer.evals import run_eval_tasks
+from mini_agent.maintainer.llm_roles import create_maintainer_llm_roles
 from mini_agent.schema import LLMProvider
 from mini_agent.tools.base import Tool
 from mini_agent.tools.bash_tool import BashKillTool, BashOutputTool, BashTool
@@ -495,6 +496,11 @@ Examples:
         action="store_true",
         help="Run the maintainer workflow fallback directly instead of LangGraph.",
     )
+    maintain_parser.add_argument(
+        "--llm-implement",
+        action="store_true",
+        help="Use the configured maintainer implementer model to produce and apply a unified diff.",
+    )
 
     maintain_eval_parser = subparsers.add_parser("maintain-eval", help="Run local OSS maintainer eval tasks")
     maintain_eval_parser.add_argument("--repo", required=True, help="Path to the local git repository to evaluate against")
@@ -530,6 +536,11 @@ Examples:
         "--no-langgraph",
         action="store_true",
         help="Run the maintainer workflow fallback directly instead of LangGraph.",
+    )
+    maintain_eval_parser.add_argument(
+        "--llm-implement",
+        action="store_true",
+        help="Use the configured maintainer implementer model for each eval task.",
     )
 
     return parser.parse_args()
@@ -1224,6 +1235,7 @@ async def run_event_trace_eval(args: argparse.Namespace, workspace_dir: Path) ->
 def run_maintainer_cli(args: argparse.Namespace, workspace_dir: Path) -> None:
     """Run the local OSS maintainer workflow."""
 
+    implementer_client = _maintainer_implementer_client(args.llm_implement)
     issue_file = Path(args.issue_file).expanduser()
     if not issue_file.is_absolute():
         issue_file = Path.cwd() / issue_file
@@ -1238,6 +1250,7 @@ def run_maintainer_cli(args: argparse.Namespace, workspace_dir: Path) -> None:
         verification_timeout=args.verification_timeout,
         max_retries=args.max_retries,
         use_langgraph=not args.no_langgraph,
+        implementer_client=implementer_client,
     )
     print(f"{Colors.GREEN}✅ Maintainer run complete{Colors.RESET}")
     print(f"{Colors.DIM}Status: {result.status}{Colors.RESET}")
@@ -1249,6 +1262,7 @@ def run_maintainer_cli(args: argparse.Namespace, workspace_dir: Path) -> None:
 def run_maintainer_eval_cli(args: argparse.Namespace, workspace_dir: Path) -> None:
     """Run local maintainer eval tasks."""
 
+    implementer_client = _maintainer_implementer_client(args.llm_implement)
     result = run_eval_tasks(
         repo_path=args.repo,
         tasks_dir=args.tasks_dir,
@@ -1258,6 +1272,7 @@ def run_maintainer_eval_cli(args: argparse.Namespace, workspace_dir: Path) -> No
         max_retries=args.max_retries,
         use_langgraph=not args.no_langgraph,
         test_command_override=args.test_command,
+        implementer_client=implementer_client,
     )
     report_path = result.output_dir / "eval_report.md"
     results_path = result.output_dir / "eval_results.json"
@@ -1267,6 +1282,16 @@ def run_maintainer_eval_cli(args: argparse.Namespace, workspace_dir: Path) -> No
     print(f"{Colors.DIM}Resolved rate: {metrics['resolved_rate']:.2f}{Colors.RESET}")
     print(f"{Colors.DIM}Report: {report_path}{Colors.RESET}")
     print(f"{Colors.DIM}Results: {results_path}{Colors.RESET}")
+
+
+def _maintainer_implementer_client(enabled: bool):
+    if not enabled:
+        return None
+    config = _load_config_optional()
+    roles = create_maintainer_llm_roles(config, implementer=True)
+    if roles.implementer is None:
+        raise ValueError("Maintainer implementer model requested but tools.maintainer_models.api_key is not configured")
+    return roles.implementer
 
 
 def main():
