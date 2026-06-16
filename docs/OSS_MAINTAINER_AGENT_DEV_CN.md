@@ -764,7 +764,7 @@ mini-agent maintain --repo /tmp/demo-repo --issue-file issue.md --test "pytest"
 - [x] 将当前 `evals/tasks/*` 从“任务描述”升级为可实际运行的 fixture 或 repo_ref。
 - [x] 新增 `maintain-eval --fixture-root`，自动复制 fixture 到临时目录再运行。
 - [x] eval 结束后保留每个任务的 run artifacts。
-- [ ] 准备至少 1 个失败案例，报告中能解释失败原因。
+- [x] 准备至少 1 个失败案例，报告中能解释失败原因。
 
 ### P1：Demo 和文档
 

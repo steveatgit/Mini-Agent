@@ -40,9 +40,11 @@ class MaintainerEvalTaskResult:
     run_id: str
     run_dir: Path
     repo_source: str | None
+    expected_behavior: str | None
     changed_files: list[str]
     expected_files: list[str]
     test_command: str | None
+    failure_summary: str
     failure_category: str
     retry_count: int
 
@@ -53,9 +55,11 @@ class MaintainerEvalTaskResult:
             "run_id": self.run_id,
             "run_dir": str(self.run_dir),
             "repo_source": self.repo_source,
+            "expected_behavior": self.expected_behavior,
             "changed_files": self.changed_files,
             "expected_files": self.expected_files,
             "test_command": self.test_command,
+            "failure_summary": self.failure_summary,
             "failure_category": self.failure_category,
             "retry_count": self.retry_count,
         }
@@ -219,9 +223,11 @@ def render_eval_report(result: MaintainerEvalRunResult) -> str:
                 f"- test_command: `{task.test_command or 'none'}`",
                 f"- retry_count: {task.retry_count}",
                 f"- repo_source: {task.repo_source or 'unknown'}",
+                f"- expected_behavior: {task.expected_behavior or 'none'}",
                 f"- changed_files: {', '.join(task.changed_files) if task.changed_files else 'none'}",
                 f"- expected_files: {', '.join(task.expected_files) if task.expected_files else 'none'}",
                 f"- failure_category: {task.failure_category or 'none'}",
+                f"- failure_summary: {task.failure_summary or 'none'}",
                 "",
             ]
         )
@@ -257,9 +263,11 @@ def _task_result_from_run(
         run_id=run_result.run_id,
         run_dir=run_result.run_dir,
         repo_source=repo_source,
+        expected_behavior=task.expected_behavior,
         changed_files=list(state.get("changed_files", [])),
         expected_files=task.expected_files or [],
         test_command=test_command,
+        failure_summary=str(state.get("failure_summary", "")),
         failure_category=_failure_category(state),
         retry_count=int(state.get("retry_count", 0)),
     )

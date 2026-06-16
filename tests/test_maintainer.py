@@ -468,12 +468,14 @@ def test_load_eval_tasks_from_fixture_directory():
     tasks = load_eval_tasks("evals/tasks")
     task_ids = {task.task_id for task in tasks}
 
-    assert {"python-cli-001", "python-cli-002", "docs-001"}.issubset(task_ids)
+    assert {"python-cli-001", "python-cli-002", "docs-001", "failure-001"}.issubset(task_ids)
     task = load_eval_task("evals/tasks/python-cli-001")
     assert "argument parsing" in task.issue_text
     assert task.test_command == "python -m pytest tests/test_cli.py"
     assert task.expected_files == ["src/demo_cli.py", "tests/test_cli.py"]
     assert task.repo_ref == "python-cli-001"
+    failure_task = load_eval_task("evals/tasks/failure-001")
+    assert "verification step should fail" in failure_task.expected_behavior
 
 
 def test_run_eval_tasks_writes_report_and_results(tmp_path):
@@ -583,3 +585,50 @@ def test_run_maintainer_eval_cli_with_fixture_root(tmp_path):
     assert "## Node Timings" in summary
     assert "## Model Calls" in summary
     assert state["model_call_counts"]["implementer"] == 1
+
+
+def test_run_eval_tasks_includes_failure_reason_for_failed_fixture(tmp_path):
+    fixture_root = tmp_path / "fixtures"
+    task_root = tmp_path / "tasks"
+    fixture_repo = fixture_root / "failure-001" / "repo"
+    fixture_repo.mkdir(parents=True)
+    (fixture_root / "failure-001" / "issue.md").write_text(
+        "Intentional failure fixture.\n\nExpected: the verification command fails.",
+        encoding="utf-8",
+    )
+    (fixture_root / "failure-001" / "test_command.txt").write_text("python -c 'import sys; sys.exit(1)'\n", encoding="utf-8")
+    (fixture_root / "failure-001" / "expected_files.txt").write_text("README.md\n", encoding="utf-8")
+    (fixture_root / "failure-001" / "expected_behavior.md").write_text(
+        "The verification step should fail with exit code 1 so the report can explain the failure path.",
+        encoding="utf-8",
+    )
+    (fixture_repo / "README.md").write_text("# Failure Fixture\n", encoding="utf-8")
+    task_dir = task_root / "failure-001"
+    task_dir.mkdir(parents=True)
+    (task_dir / "issue.md").write_text("Intentional failure fixture.\n\nExpected: the verification command fails.", encoding="utf-8")
+    (task_dir / "test_command.txt").write_text("python -c 'import sys; sys.exit(1)'\n", encoding="utf-8")
+    (task_dir / "expected_files.txt").write_text("README.md\n", encoding="utf-8")
+    (task_dir / "expected_behavior.md").write_text(
+        "The verification step should fail with exit code 1 so the report can explain the failure path.",
+        encoding="utf-8",
+    )
+    (task_dir / "repo_ref.txt").write_text("failure-001\n", encoding="utf-8")
+
+    result = run_eval_tasks(
+        repo_path=None,
+        tasks_dir=task_root,
+        workspace_dir=tmp_path,
+        output_dir=tmp_path / "failure-eval-out",
+        fixture_root=fixture_root,
+        use_langgraph=False,
+    )
+
+    run_dir = tmp_path / "failure-eval-out" / "artifacts" / "runs" / "eval-failure-001"
+    report = (tmp_path / "failure-eval-out" / "eval_report.md").read_text(encoding="utf-8")
+
+    assert result.task_results[0].status == "fail"
+    assert result.task_results[0].failure_category == "test_failed"
+    assert "The verification step should fail" in report
+    assert "failure_summary" in report
+    assert "Command failed with exit code 1" in result.task_results[0].failure_summary
+    assert run_dir.exists()
