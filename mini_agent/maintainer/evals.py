@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .implementer import ImplementerClient
+from .planner import PlannerClient
 from .reflector import ReflectorClient
 from .runner import MaintainerRunResult, run_maintainer
 
@@ -134,6 +135,7 @@ def run_eval_tasks(
     max_retries: int = 0,
     use_langgraph: bool = True,
     test_command_override: str | None = None,
+    planner_client: PlannerClient | None = None,
     implementer_client: ImplementerClient | None = None,
     verifier_client: ReflectorClient | None = None,
 ) -> MaintainerEvalRunResult:
@@ -159,6 +161,7 @@ def run_eval_tasks(
             verification_timeout=verification_timeout,
             max_retries=max_retries,
             use_langgraph=use_langgraph,
+            planner_client=planner_client,
             implementer_client=implementer_client,
             verifier_client=verifier_client,
         )

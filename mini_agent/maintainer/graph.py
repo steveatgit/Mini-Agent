@@ -8,6 +8,7 @@ from typing import Any
 from .artifacts import ArtifactWriter
 from .implementer import ImplementerClient, run_model_implementer
 from .patch_packager import render_plan, render_pr_description, render_run_summary
+from .planner import PlannerClient, render_structured_plan, run_model_context_select, run_model_patch_plan, run_model_triage
 from .reflector import ReflectorClient, reflect_on_failure
 from .repo_inspector import (
     changed_files,
@@ -34,6 +35,7 @@ class MaintainerWorkflow:
         verification_timeout: int = 120,
         max_retries: int = 0,
         use_langgraph: bool = True,
+        planner_client: PlannerClient | None = None,
         implementer_client: ImplementerClient | None = None,
         verifier_client: ReflectorClient | None = None,
     ):
@@ -42,6 +44,7 @@ class MaintainerWorkflow:
         self.verification_timeout = verification_timeout
         self.max_retries = max_retries
         self.use_langgraph = use_langgraph
+        self.planner_client = planner_client
         self.implementer_client = implementer_client
         self.verifier_client = verifier_client
 
@@ -127,34 +130,111 @@ class MaintainerWorkflow:
         return state
 
     def issue_triage(self, state: MaintainerState) -> MaintainerState:
-        triage = triage_issue(state.get("issue_text", ""), state.get("repo_map", {}))
+        planner_error = None
+        if self.planner_client is not None:
+            payload, planner_error = run_model_triage(
+                client=self.planner_client,
+                issue_text=state.get("issue_text", ""),
+                repo_map=state.get("repo_map", {}),
+            )
+            if payload is not None:
+                triage = payload.model_dump()
+            else:
+                triage = triage_issue(state.get("issue_text", ""), state.get("repo_map", {}))
+        else:
+            triage = triage_issue(state.get("issue_text", ""), state.get("repo_map", {}))
         state["triage"] = triage
         state["suspected_files"] = list(triage.get("suspected_files", []))
         self.artifacts.write_json("triage.json", triage)
-        self.artifacts.append_trace({"node": "issue_triage", "suspected_files": state["suspected_files"]})
+        self.artifacts.append_trace(
+            {
+                "node": "issue_triage",
+                "mode": "llm" if self.planner_client is not None and planner_error is None else "fallback",
+                "suspected_files": state["suspected_files"],
+                "error": planner_error,
+            }
+        )
         return state
 
     def context_select(self, state: MaintainerState) -> MaintainerState:
-        selected_files = select_context_files(state.get("issue_text", ""), state.get("repo_map", {}))
+        planner_error = None
+        if self.planner_client is not None:
+            payload, planner_error = run_model_context_select(
+                client=self.planner_client,
+                issue_text=state.get("issue_text", ""),
+                repo_map=state.get("repo_map", {}),
+                triage=state.get("triage", {}),
+            )
+            selected_files = payload.files if payload is not None else []
+        else:
+            selected_files = []
+        if not selected_files:
+            selected_files = select_context_files(state.get("issue_text", ""), state.get("repo_map", {}))
         if not selected_files:
             selected_files = state.get("suspected_files", [])
         state["suspected_files"] = selected_files
         context = render_selected_context(self.repo_path, selected_files)
         state["selected_context"] = context
         self.artifacts.write_text("selected_context.md", context)
-        self.artifacts.append_trace({"node": "context_select", "selected_files": selected_files})
+        self.artifacts.append_trace(
+            {
+                "node": "context_select",
+                "mode": "llm" if self.planner_client is not None and planner_error is None else "fallback",
+                "selected_files": selected_files,
+                "error": planner_error,
+            }
+        )
         return state
 
     def plan_patch(self, state: MaintainerState) -> MaintainerState:
-        plan = render_plan(
-            state.get("issue_text", ""),
-            state.get("triage", {}),
-            state.get("suspected_files", []),
-            state.get("test_command"),
-        )
+        planner_error = None
+        plan_payload: dict[str, Any] | None = None
+        if self.planner_client is not None:
+            payload, planner_error = run_model_patch_plan(
+                client=self.planner_client,
+                issue_text=state.get("issue_text", ""),
+                triage=state.get("triage", {}),
+                selected_files=state.get("suspected_files", []),
+                selected_context=state.get("selected_context", ""),
+                test_command=state.get("test_command"),
+            )
+            if payload is not None:
+                plan_payload = payload.model_dump()
+                plan = render_structured_plan(payload, state.get("test_command"))
+            else:
+                plan = render_plan(
+                    state.get("issue_text", ""),
+                    state.get("triage", {}),
+                    state.get("suspected_files", []),
+                    state.get("test_command"),
+                )
+        else:
+            plan = render_plan(
+                state.get("issue_text", ""),
+                state.get("triage", {}),
+                state.get("suspected_files", []),
+                state.get("test_command"),
+            )
         state["plan"] = plan
+        if plan_payload is None:
+            plan_payload = {
+                "target_files": state.get("suspected_files", []),
+                "changes": ["Use the deterministic fallback plan in plan.md."],
+                "test_strategy": [f"Run `{state.get('test_command')}`."] if state.get("test_command") else [],
+                "risks": ["Review generated artifacts before creating a PR."],
+            }
+        state["plan_payload"] = plan_payload
+        self.artifacts.write_json("plan.json", plan_payload)
         self.artifacts.write_text("plan.md", plan)
-        self.artifacts.append_trace({"node": "plan_patch", "test_command": state.get("test_command")})
+        self.artifacts.append_trace(
+            {
+                "node": "plan_patch",
+                "mode": "llm" if self.planner_client is not None and planner_error is None else "fallback",
+                "test_command": state.get("test_command"),
+                "target_files": plan_payload.get("target_files", []),
+                "error": planner_error,
+            }
+        )
         return state
 
     def implement_patch(self, state: MaintainerState) -> MaintainerState:

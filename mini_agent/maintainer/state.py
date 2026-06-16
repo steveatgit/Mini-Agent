@@ -18,6 +18,7 @@ class MaintainerState(TypedDict, total=False):
     triage: dict[str, Any]
     suspected_files: list[str]
     plan: str
+    plan_payload: dict[str, Any]
     selected_context: str
     implementation_notes: list[str]
 

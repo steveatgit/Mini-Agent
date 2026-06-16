@@ -6,6 +6,7 @@ from mini_agent.cli import run_maintainer_cli, run_maintainer_eval_cli
 from mini_agent.maintainer import run_maintainer
 from mini_agent.maintainer.evals import load_eval_task, load_eval_tasks, run_eval_tasks
 from mini_agent.maintainer.implementer import apply_unified_diff, extract_unified_diff
+from mini_agent.maintainer.planner import run_model_context_select
 from mini_agent.maintainer.prompts import ContextSelectionPayload, IssueTriagePayload
 from mini_agent.maintainer.reflector import classify_failure, reflect_on_failure
 from mini_agent.schema import LLMResponse
@@ -29,6 +30,16 @@ class FakeReflectClient:
     async def generate(self, messages, tools=None):
         self.messages.append(messages)
         return LLMResponse(content=json.dumps(self.payload), finish_reason="stop")
+
+
+class FakePlanClient:
+    def __init__(self, payloads: list[dict]):
+        self.payloads = list(payloads)
+        self.messages = []
+
+    async def generate(self, messages, tools=None):
+        self.messages.append(messages)
+        return LLMResponse(content=json.dumps(self.payloads.pop(0)), finish_reason="stop")
 
 
 def _init_repo(path):
@@ -78,6 +89,7 @@ def test_run_maintainer_cli_reads_issue_file(tmp_path):
         verification_timeout=120,
         max_retries=0,
         no_langgraph=True,
+        llm_plan=False,
         llm_implement=False,
         llm_reflect=False,
     )
@@ -136,6 +148,62 @@ def test_run_maintainer_with_fake_implementer_applies_patch(tmp_path):
     assert "int(a) + int(b)" in (repo / "app.py").read_text(encoding="utf-8")
     trace = (tmp_path / "artifacts" / "runs" / "llm-demo" / "tool_trace.jsonl").read_text(encoding="utf-8")
     assert '"status": "applied"' in trace
+
+
+def test_run_maintainer_with_fake_planner_writes_structured_plan(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    planner = FakePlanClient(
+        [
+            {
+                "issue_type": "bug",
+                "summary": "add should support numeric strings",
+                "keywords": ["add", "numeric"],
+                "suspected_files": ["app.py", "tests/test_app.py"],
+                "acceptance_criteria": ["tests pass"],
+            },
+            {"files": ["app.py", "missing.py", "tests/test_app.py"], "rationale": "implementation and coverage"},
+            {
+                "target_files": ["app.py", "tests/test_app.py"],
+                "changes": ["Coerce add inputs before summing."],
+                "test_strategy": ["Run the provided pytest command."],
+                "risks": ["Low risk."],
+            },
+        ]
+    )
+
+    result = run_maintainer(
+        repo,
+        "app.py add should support numeric strings\n\nExpected: tests pass.",
+        test_command="python -m pytest tests/test_app.py",
+        workspace_dir=tmp_path,
+        run_id="planner-demo",
+        use_langgraph=False,
+        planner_client=planner,
+    )
+
+    run_dir = tmp_path / "artifacts" / "runs" / "planner-demo"
+    plan_json = json.loads((run_dir / "plan.json").read_text(encoding="utf-8"))
+    trace = (run_dir / "tool_trace.jsonl").read_text(encoding="utf-8")
+    assert result.status == "pass"
+    assert plan_json["target_files"] == ["app.py", "tests/test_app.py"]
+    assert "Coerce add inputs before summing." in (run_dir / "plan.md").read_text(encoding="utf-8")
+    assert '"mode": "llm"' in trace
+
+
+def test_model_context_select_filters_to_existing_repo_files():
+    client = FakePlanClient([{"files": ["/app.py", "../bad.py", "missing.py", "tests/test_app.py"], "rationale": "focused"}])
+    payload, error = run_model_context_select(
+        client=client,
+        issue_text="fix app",
+        repo_map={"files": ["app.py", "tests/test_app.py"]},
+        triage={},
+    )
+
+    assert error is None
+    assert payload is not None
+    assert payload.files == ["app.py", "tests/test_app.py"]
 
 
 def test_run_maintainer_reflects_failed_verification_without_retry_loop(tmp_path):
@@ -284,6 +352,7 @@ def test_run_maintainer_eval_cli(tmp_path):
         verification_timeout=120,
         max_retries=0,
         no_langgraph=True,
+        llm_plan=False,
         llm_implement=False,
         llm_reflect=False,
     )

@@ -665,11 +665,11 @@ mini-agent maintain --repo /tmp/demo-repo --issue-file issue.md --test "pytest"
 ### P0：LLM 节点接入
 
 - [x] 新增 `mini_agent/maintainer/llm_roles.py`，复用 `tools.maintainer_models` 创建 planner、implementer、verifier、pr_writer client。
-- [ ] 在 `issue_triage` 中增加 LLM 模式，输出 `IssueTriagePayload`，失败时回退规则版 triage。
-- [ ] 在 `context_select` 中增加 LLM 模式，输出 `ContextSelectionPayload`，并校验文件必须存在于 repo。
-- [ ] 在 `plan_patch` 中增加 LLM 模式，输出 `PatchPlanPayload`，并写入结构化 `plan.json`。
+- [x] 在 `issue_triage` 中增加 LLM 模式，输出 `IssueTriagePayload`，失败时回退规则版 triage。
+- [x] 在 `context_select` 中增加 LLM 模式，输出 `ContextSelectionPayload`，并校验文件必须存在于 repo。
+- [x] 在 `plan_patch` 中增加 LLM 模式，输出 `PatchPlanPayload`，并写入结构化 `plan.json`。
 - [partial] 增加 CLI 开关：
-  - [ ] `--llm-plan`
+  - [x] `--llm-plan`
   - [x] `--llm-implement`
   - [x] `--llm-reflect`
   - [ ] `--llm-pr`

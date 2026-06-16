@@ -497,6 +497,11 @@ Examples:
         help="Run the maintainer workflow fallback directly instead of LangGraph.",
     )
     maintain_parser.add_argument(
+        "--llm-plan",
+        action="store_true",
+        help="Use the configured maintainer planner model for triage, context selection, and patch planning.",
+    )
+    maintain_parser.add_argument(
         "--llm-implement",
         action="store_true",
         help="Use the configured maintainer implementer model to produce and apply a unified diff.",
@@ -541,6 +546,11 @@ Examples:
         "--no-langgraph",
         action="store_true",
         help="Run the maintainer workflow fallback directly instead of LangGraph.",
+    )
+    maintain_eval_parser.add_argument(
+        "--llm-plan",
+        action="store_true",
+        help="Use the configured maintainer planner model for each eval task.",
     )
     maintain_eval_parser.add_argument(
         "--llm-implement",
@@ -1245,8 +1255,7 @@ async def run_event_trace_eval(args: argparse.Namespace, workspace_dir: Path) ->
 def run_maintainer_cli(args: argparse.Namespace, workspace_dir: Path) -> None:
     """Run the local OSS maintainer workflow."""
 
-    implementer_client = _maintainer_implementer_client(args.llm_implement)
-    verifier_client = _maintainer_verifier_client(args.llm_reflect)
+    roles = _maintainer_llm_roles(args.llm_plan, args.llm_implement, args.llm_reflect, False)
     issue_file = Path(args.issue_file).expanduser()
     if not issue_file.is_absolute():
         issue_file = Path.cwd() / issue_file
@@ -1261,8 +1270,9 @@ def run_maintainer_cli(args: argparse.Namespace, workspace_dir: Path) -> None:
         verification_timeout=args.verification_timeout,
         max_retries=args.max_retries,
         use_langgraph=not args.no_langgraph,
-        implementer_client=implementer_client,
-        verifier_client=verifier_client,
+        planner_client=roles.planner,
+        implementer_client=roles.implementer,
+        verifier_client=roles.verifier,
     )
     print(f"{Colors.GREEN}✅ Maintainer run complete{Colors.RESET}")
     print(f"{Colors.DIM}Status: {result.status}{Colors.RESET}")
@@ -1274,8 +1284,7 @@ def run_maintainer_cli(args: argparse.Namespace, workspace_dir: Path) -> None:
 def run_maintainer_eval_cli(args: argparse.Namespace, workspace_dir: Path) -> None:
     """Run local maintainer eval tasks."""
 
-    implementer_client = _maintainer_implementer_client(args.llm_implement)
-    verifier_client = _maintainer_verifier_client(args.llm_reflect)
+    roles = _maintainer_llm_roles(args.llm_plan, args.llm_implement, args.llm_reflect, False)
     result = run_eval_tasks(
         repo_path=args.repo,
         tasks_dir=args.tasks_dir,
@@ -1285,8 +1294,9 @@ def run_maintainer_eval_cli(args: argparse.Namespace, workspace_dir: Path) -> No
         max_retries=args.max_retries,
         use_langgraph=not args.no_langgraph,
         test_command_override=args.test_command,
-        implementer_client=implementer_client,
-        verifier_client=verifier_client,
+        planner_client=roles.planner,
+        implementer_client=roles.implementer,
+        verifier_client=roles.verifier,
     )
     report_path = result.output_dir / "eval_report.md"
     results_path = result.output_dir / "eval_results.json"
@@ -1298,24 +1308,23 @@ def run_maintainer_eval_cli(args: argparse.Namespace, workspace_dir: Path) -> No
     print(f"{Colors.DIM}Results: {results_path}{Colors.RESET}")
 
 
-def _maintainer_implementer_client(enabled: bool):
-    if not enabled:
-        return None
+def _maintainer_llm_roles(planner: bool, implementer: bool, verifier: bool, pr_writer: bool):
+    if not any((planner, implementer, verifier, pr_writer)):
+        return create_maintainer_llm_roles(None)
     config = _load_config_optional()
-    roles = create_maintainer_llm_roles(config, implementer=True)
-    if roles.implementer is None:
-        raise ValueError("Maintainer implementer model requested but tools.maintainer_models.api_key is not configured")
-    return roles.implementer
-
-
-def _maintainer_verifier_client(enabled: bool):
-    if not enabled:
-        return None
-    config = _load_config_optional()
-    roles = create_maintainer_llm_roles(config, verifier=True)
-    if roles.verifier is None:
-        raise ValueError("Maintainer verifier model requested but tools.maintainer_models.api_key is not configured")
-    return roles.verifier
+    roles = create_maintainer_llm_roles(config, planner=planner, implementer=implementer, verifier=verifier, pr_writer=pr_writer)
+    missing = []
+    if planner and roles.planner is None:
+        missing.append("planner")
+    if implementer and roles.implementer is None:
+        missing.append("implementer")
+    if verifier and roles.verifier is None:
+        missing.append("verifier")
+    if pr_writer and roles.pr_writer is None:
+        missing.append("pr_writer")
+    if missing:
+        raise ValueError(f"Maintainer model requested but tools.maintainer_models.api_key is not configured: {', '.join(missing)}")
+    return roles
 
 
 def main():
