@@ -34,7 +34,7 @@ class MaintainerWorkflow:
         artifacts: ArtifactWriter,
         *,
         verification_timeout: int = 120,
-        max_retries: int = 0,
+        max_retries: int = 2,
         use_langgraph: bool = True,
         planner_client: PlannerClient | None = None,
         implementer_client: ImplementerClient | None = None,

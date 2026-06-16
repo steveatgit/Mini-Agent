@@ -700,7 +700,7 @@ mini-agent maintain --repo /tmp/demo-repo --issue-file issue.md --test "pytest"
   - `model_format_error`
 - [x] 根据分类决定是否重试。
 - [x] 重试时把失败摘要和当前 diff 注入 implementer。
-- [ ] 默认 `max_retries=2`，CLI 可覆盖。
+- [x] 默认 `max_retries=2`，CLI 可覆盖。
 
 ### P1：PR 文案和最终报告升级
 

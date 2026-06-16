@@ -488,8 +488,8 @@ Examples:
     maintain_parser.add_argument(
         "--max-retries",
         type=int,
-        default=0,
-        help="Maximum verification failure reflection retries. Defaults to 0 for deterministic MVP runs.",
+        default=2,
+        help="Maximum verification failure reflection retries. Defaults to 2.",
     )
     maintain_parser.add_argument(
         "--no-langgraph",
@@ -544,8 +544,8 @@ Examples:
     maintain_eval_parser.add_argument(
         "--max-retries",
         type=int,
-        default=0,
-        help="Maximum verification failure reflection retries per task.",
+        default=2,
+        help="Maximum verification failure reflection retries per task. Defaults to 2.",
     )
     maintain_eval_parser.add_argument(
         "--no-langgraph",

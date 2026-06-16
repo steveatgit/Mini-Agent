@@ -288,6 +288,26 @@ def test_run_maintainer_reflects_failed_verification_without_retry_loop(tmp_path
     assert len(result.state["test_results"]) == 1
 
 
+def test_run_maintainer_default_retries_reflect_once_without_implementer(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+
+    result = run_maintainer(
+        repo,
+        "app.py add should keep returning the sum\n\nExpected: tests pass.",
+        test_command="python -c 'import sys; sys.exit(1)'",
+        workspace_dir=tmp_path,
+        run_id="default-retry-demo",
+        use_langgraph=False,
+    )
+
+    assert result.status == "fail"
+    assert result.state["retry_count"] == 1
+    assert result.state["failure_category"] == "test_failed"
+    assert result.state["should_retry"] is False
+
+
 def test_reflect_on_failure_uses_verifier_payload():
     client = FakeReflectClient(
         {

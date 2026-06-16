@@ -133,7 +133,7 @@ def run_eval_tasks(
     workspace_dir: str | Path,
     output_dir: str | Path | None = None,
     verification_timeout: int = 120,
-    max_retries: int = 0,
+    max_retries: int = 2,
     use_langgraph: bool = True,
     test_command_override: str | None = None,
     planner_client: PlannerClient | None = None,
