@@ -1,3 +1,4 @@
+import json
 import subprocess
 from types import SimpleNamespace
 
@@ -6,6 +7,7 @@ from mini_agent.maintainer import run_maintainer
 from mini_agent.maintainer.evals import load_eval_task, load_eval_tasks, run_eval_tasks
 from mini_agent.maintainer.implementer import apply_unified_diff, extract_unified_diff
 from mini_agent.maintainer.prompts import ContextSelectionPayload, IssueTriagePayload
+from mini_agent.maintainer.reflector import classify_failure, reflect_on_failure
 from mini_agent.schema import LLMResponse
 
 
@@ -17,6 +19,16 @@ class FakePatchClient:
     async def generate(self, messages, tools=None):
         self.messages.append(messages)
         return LLMResponse(content=f"```diff\n{self.patch}\n```", finish_reason="stop")
+
+
+class FakeReflectClient:
+    def __init__(self, payload: dict):
+        self.payload = payload
+        self.messages = []
+
+    async def generate(self, messages, tools=None):
+        self.messages.append(messages)
+        return LLMResponse(content=json.dumps(self.payload), finish_reason="stop")
 
 
 def _init_repo(path):
@@ -67,6 +79,7 @@ def test_run_maintainer_cli_reads_issue_file(tmp_path):
         max_retries=0,
         no_langgraph=True,
         llm_implement=False,
+        llm_reflect=False,
     )
 
     run_maintainer_cli(args, tmp_path)
@@ -123,6 +136,62 @@ def test_run_maintainer_with_fake_implementer_applies_patch(tmp_path):
     assert "int(a) + int(b)" in (repo / "app.py").read_text(encoding="utf-8")
     trace = (tmp_path / "artifacts" / "runs" / "llm-demo" / "tool_trace.jsonl").read_text(encoding="utf-8")
     assert '"status": "applied"' in trace
+
+
+def test_run_maintainer_reflects_failed_verification_without_retry_loop(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+
+    result = run_maintainer(
+        repo,
+        "app.py add should keep returning the sum\n\nExpected: tests pass.",
+        test_command="python -c 'import sys; sys.exit(1)'",
+        workspace_dir=tmp_path,
+        run_id="reflect-demo",
+        use_langgraph=False,
+        max_retries=1,
+    )
+
+    run_dir = tmp_path / "artifacts" / "runs" / "reflect-demo"
+    reflection = json.loads((run_dir / "reflection.json").read_text(encoding="utf-8"))
+    assert result.status == "fail"
+    assert result.state["retry_count"] == 1
+    assert result.state["failure_category"] == "test_failed"
+    assert reflection["should_retry"] is False
+    assert len(result.state["test_results"]) == 1
+
+
+def test_reflect_on_failure_uses_verifier_payload():
+    client = FakeReflectClient(
+        {
+            "should_retry": True,
+            "failure_category": "context_missing",
+            "summary": "Need another file.",
+            "next_steps": ["Select more context."],
+        }
+    )
+
+    reflection = reflect_on_failure(
+        test_results=[{"status": "fail", "exit_code": 1, "summary": "missing helper"}],
+        diff="",
+        plan="plan",
+        retry_count=1,
+        max_retries=2,
+        verifier_client=client,
+        has_implementer=True,
+    )
+
+    assert reflection.should_retry is True
+    assert reflection.failure_category == "context_missing"
+    assert client.messages
+
+
+def test_classify_failure_categories():
+    assert classify_failure({"status": "timeout"}) == "test_timeout"
+    assert classify_failure({"status": "skipped"}) == "test_skipped"
+    assert classify_failure({"status": "fail", "stderr": "ModuleNotFoundError: no module named x"}) == "dependency_missing"
+    assert classify_failure({"status": "fail", "stderr": "git apply failed"}) == "patch_apply_failed"
 
 
 def test_patch_apply_rejects_files_outside_plan(tmp_path):
@@ -216,6 +285,7 @@ def test_run_maintainer_eval_cli(tmp_path):
         max_retries=0,
         no_langgraph=True,
         llm_implement=False,
+        llm_reflect=False,
     )
 
     run_maintainer_eval_cli(args, tmp_path)

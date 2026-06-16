@@ -501,6 +501,11 @@ Examples:
         action="store_true",
         help="Use the configured maintainer implementer model to produce and apply a unified diff.",
     )
+    maintain_parser.add_argument(
+        "--llm-reflect",
+        action="store_true",
+        help="Use the configured maintainer verifier model to classify failed verification runs.",
+    )
 
     maintain_eval_parser = subparsers.add_parser("maintain-eval", help="Run local OSS maintainer eval tasks")
     maintain_eval_parser.add_argument("--repo", required=True, help="Path to the local git repository to evaluate against")
@@ -541,6 +546,11 @@ Examples:
         "--llm-implement",
         action="store_true",
         help="Use the configured maintainer implementer model for each eval task.",
+    )
+    maintain_eval_parser.add_argument(
+        "--llm-reflect",
+        action="store_true",
+        help="Use the configured maintainer verifier model to classify failed verification runs.",
     )
 
     return parser.parse_args()
@@ -1236,6 +1246,7 @@ def run_maintainer_cli(args: argparse.Namespace, workspace_dir: Path) -> None:
     """Run the local OSS maintainer workflow."""
 
     implementer_client = _maintainer_implementer_client(args.llm_implement)
+    verifier_client = _maintainer_verifier_client(args.llm_reflect)
     issue_file = Path(args.issue_file).expanduser()
     if not issue_file.is_absolute():
         issue_file = Path.cwd() / issue_file
@@ -1251,6 +1262,7 @@ def run_maintainer_cli(args: argparse.Namespace, workspace_dir: Path) -> None:
         max_retries=args.max_retries,
         use_langgraph=not args.no_langgraph,
         implementer_client=implementer_client,
+        verifier_client=verifier_client,
     )
     print(f"{Colors.GREEN}✅ Maintainer run complete{Colors.RESET}")
     print(f"{Colors.DIM}Status: {result.status}{Colors.RESET}")
@@ -1263,6 +1275,7 @@ def run_maintainer_eval_cli(args: argparse.Namespace, workspace_dir: Path) -> No
     """Run local maintainer eval tasks."""
 
     implementer_client = _maintainer_implementer_client(args.llm_implement)
+    verifier_client = _maintainer_verifier_client(args.llm_reflect)
     result = run_eval_tasks(
         repo_path=args.repo,
         tasks_dir=args.tasks_dir,
@@ -1273,6 +1286,7 @@ def run_maintainer_eval_cli(args: argparse.Namespace, workspace_dir: Path) -> No
         use_langgraph=not args.no_langgraph,
         test_command_override=args.test_command,
         implementer_client=implementer_client,
+        verifier_client=verifier_client,
     )
     report_path = result.output_dir / "eval_report.md"
     results_path = result.output_dir / "eval_results.json"
@@ -1292,6 +1306,16 @@ def _maintainer_implementer_client(enabled: bool):
     if roles.implementer is None:
         raise ValueError("Maintainer implementer model requested but tools.maintainer_models.api_key is not configured")
     return roles.implementer
+
+
+def _maintainer_verifier_client(enabled: bool):
+    if not enabled:
+        return None
+    config = _load_config_optional()
+    roles = create_maintainer_llm_roles(config, verifier=True)
+    if roles.verifier is None:
+        raise ValueError("Maintainer verifier model requested but tools.maintainer_models.api_key is not configured")
+    return roles.verifier
 
 
 def main():

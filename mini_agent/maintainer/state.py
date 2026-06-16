@@ -26,6 +26,9 @@ class MaintainerState(TypedDict, total=False):
     test_results: list[dict[str, Any]]
     verification_status: str
     failure_summary: str
+    failure_category: str
+    reflection: dict[str, Any]
+    should_retry: bool
     retry_count: int
 
     pr_description: str

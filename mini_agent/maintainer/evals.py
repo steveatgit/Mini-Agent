@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .implementer import ImplementerClient
+from .reflector import ReflectorClient
 from .runner import MaintainerRunResult, run_maintainer
 
 
@@ -134,6 +135,7 @@ def run_eval_tasks(
     use_langgraph: bool = True,
     test_command_override: str | None = None,
     implementer_client: ImplementerClient | None = None,
+    verifier_client: ReflectorClient | None = None,
 ) -> MaintainerEvalRunResult:
     """Run maintainer workflow over all local eval tasks."""
 
@@ -158,6 +160,7 @@ def run_eval_tasks(
             max_retries=max_retries,
             use_langgraph=use_langgraph,
             implementer_client=implementer_client,
+            verifier_client=verifier_client,
         )
         task_results.append(_task_result_from_run(task, run_result, test_command))
 
@@ -238,6 +241,8 @@ def _task_result_from_run(task: MaintainerEvalTask, run_result: MaintainerRunRes
 
 
 def _failure_category(state: dict[str, Any]) -> str:
+    if state.get("failure_category"):
+        return str(state["failure_category"])
     if state.get("verification_status") == "pass":
         return ""
     latest = (state.get("test_results") or [{}])[-1]

@@ -668,12 +668,12 @@ mini-agent maintain --repo /tmp/demo-repo --issue-file issue.md --test "pytest"
 - [ ] 在 `issue_triage` 中增加 LLM 模式，输出 `IssueTriagePayload`，失败时回退规则版 triage。
 - [ ] 在 `context_select` 中增加 LLM 模式，输出 `ContextSelectionPayload`，并校验文件必须存在于 repo。
 - [ ] 在 `plan_patch` 中增加 LLM 模式，输出 `PatchPlanPayload`，并写入结构化 `plan.json`。
-- [ ] 增加 CLI 开关：
-  - `--llm-plan`
-  - `--llm-implement`（已完成）
-  - `--llm-reflect`
-  - `--llm-pr`
-  - `--model-profile openrouter-free|local|custom`
+- [partial] 增加 CLI 开关：
+  - [ ] `--llm-plan`
+  - [x] `--llm-implement`
+  - [x] `--llm-reflect`
+  - [ ] `--llm-pr`
+  - [ ] `--model-profile openrouter-free|local|custom`
 
 ### P0：实现 `implement_patch`
 
@@ -683,22 +683,23 @@ mini-agent maintain --repo /tmp/demo-repo --issue-file issue.md --test "pytest"
 - [x] 使用 `git apply --check` 校验 patch。
 - [x] 使用 `git apply` 应用 patch。
 - [x] patch 失败时把错误写入 `tool_trace.jsonl` 和 `implementation_notes`。
-- [partial] 限制 patch 修改文件必须属于计划文件或有新增理由。
+- [x] 限制 patch 修改文件必须属于计划文件。
+- [ ] 支持模型为计划外文件提供新增理由并通过校验。
 - [ ] 对新增文件、删除文件、二进制文件分别做策略限制。
 
 ### P0：失败反思和重试
 
-- [ ] 在 `reflect_failure` 中接入 verifier_model。
-- [ ] 输出 `FailureReflectionPayload`。
-- [ ] 将失败分类为：
+- [x] 在 `reflect_failure` 中接入 verifier_model。
+- [x] 输出 `FailureReflectionPayload`。
+- [x] 将失败分类为：
   - `test_failed`
   - `test_timeout`
   - `dependency_missing`
   - `patch_apply_failed`
   - `context_missing`
   - `model_format_error`
-- [ ] 根据分类决定是否重试。
-- [ ] 重试时把失败摘要和当前 diff 注入 implementer。
+- [x] 根据分类决定是否重试。
+- [x] 重试时把失败摘要和当前 diff 注入 implementer。
 - [ ] 默认 `max_retries=2`，CLI 可覆盖。
 
 ### P1：PR 文案和最终报告升级
@@ -781,13 +782,13 @@ mini-agent maintain --repo /tmp/demo-repo --issue-file issue.md --test "pytest"
 
 ### P1：工程质量
 
-- [ ] 给 maintainer workflow 增加单元测试：
-  - repo scan
-  - triage payload fallback
-  - context selection
-  - patch apply success/failure
-  - verification timeout
-  - reflect retry route
+- [partial] 给 maintainer workflow 增加单元测试：
+  - [ ] repo scan
+  - [x] triage payload fallback
+  - [x] context selection
+  - [x] patch apply success/failure
+  - [ ] verification timeout
+  - [x] reflect retry route
 - [ ] 给 CLI 增加解析测试。
 - [ ] 给 eval report 增加 snapshot 测试。
 - [ ] CI 中跳过需要真实 API key 的 LLM 集成测试。

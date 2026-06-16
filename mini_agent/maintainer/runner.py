@@ -8,6 +8,7 @@ from pathlib import Path
 from .artifacts import ArtifactWriter, make_run_id
 from .graph import MaintainerWorkflow
 from .implementer import ImplementerClient
+from .reflector import ReflectorClient
 from .repo_inspector import ensure_repo
 from .state import MaintainerState
 
@@ -34,6 +35,7 @@ def run_maintainer(
     max_retries: int = 0,
     use_langgraph: bool = True,
     implementer_client: ImplementerClient | None = None,
+    verifier_client: ReflectorClient | None = None,
 ) -> MaintainerRunResult:
     """Run the local maintainer workflow and write artifacts."""
 
@@ -58,6 +60,7 @@ def run_maintainer(
         max_retries=max_retries,
         use_langgraph=use_langgraph,
         implementer_client=implementer_client,
+        verifier_client=verifier_client,
     )
     state = workflow.run(state)
 

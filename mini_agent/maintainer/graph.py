@@ -8,6 +8,7 @@ from typing import Any
 from .artifacts import ArtifactWriter
 from .implementer import ImplementerClient, run_model_implementer
 from .patch_packager import render_plan, render_pr_description, render_run_summary
+from .reflector import ReflectorClient, reflect_on_failure
 from .repo_inspector import (
     changed_files,
     create_patch,
@@ -34,6 +35,7 @@ class MaintainerWorkflow:
         max_retries: int = 0,
         use_langgraph: bool = True,
         implementer_client: ImplementerClient | None = None,
+        verifier_client: ReflectorClient | None = None,
     ):
         self.repo_path = repo_path
         self.artifacts = artifacts
@@ -41,6 +43,7 @@ class MaintainerWorkflow:
         self.max_retries = max_retries
         self.use_langgraph = use_langgraph
         self.implementer_client = implementer_client
+        self.verifier_client = verifier_client
 
     def run(self, state: MaintainerState) -> MaintainerState:
         """Run via LangGraph when installed, otherwise use the deterministic fallback."""
@@ -80,7 +83,7 @@ class MaintainerWorkflow:
             self._verification_route,
             {"retry": "reflect_failure", "package": "package_artifacts"},
         )
-        graph.add_edge("reflect_failure", "implement_patch")
+        graph.add_conditional_edges("reflect_failure", self._reflection_route, {"retry": "implement_patch", "package": "package_artifacts"})
         graph.add_edge("package_artifacts", END)
         return graph.compile()
 
@@ -96,6 +99,8 @@ class MaintainerWorkflow:
             if self._verification_route(state) != "retry":
                 break
             state = self.reflect_failure(state)
+            if self._reflection_route(state) != "retry":
+                break
         return self.package_artifacts(state)
 
     def bootstrap_run(self, state: MaintainerState) -> MaintainerState:
@@ -218,11 +223,33 @@ class MaintainerWorkflow:
     def reflect_failure(self, state: MaintainerState) -> MaintainerState:
         retry_count = int(state.get("retry_count", 0)) + 1
         state["retry_count"] = retry_count
-        note = f"Retry {retry_count}: verification failed; model-backed reflection is not enabled in deterministic MVP."
+        reflection = reflect_on_failure(
+            test_results=state.get("test_results", []),
+            diff=git_diff(self.repo_path),
+            plan=state.get("plan", ""),
+            retry_count=retry_count,
+            max_retries=self.max_retries,
+            verifier_client=self.verifier_client,
+            has_implementer=self.implementer_client is not None,
+        )
+        state["reflection"] = reflection.model_dump()
+        state["failure_category"] = reflection.failure_category
+        state["failure_summary"] = reflection.summary
+        state["should_retry"] = reflection.should_retry
+        note = f"Retry {retry_count}: {reflection.failure_category}: {reflection.summary}"
         notes = list(state.get("implementation_notes", []))
         notes.append(note)
         state["implementation_notes"] = notes
-        self.artifacts.append_trace({"node": "reflect_failure", "retry_count": retry_count, "failure_summary": state.get("failure_summary", "")})
+        self.artifacts.write_json("reflection.json", reflection.model_dump())
+        self.artifacts.append_trace(
+            {
+                "node": "reflect_failure",
+                "retry_count": retry_count,
+                "failure_category": reflection.failure_category,
+                "should_retry": reflection.should_retry,
+                "failure_summary": reflection.summary,
+            }
+        )
         return state
 
     def package_artifacts(self, state: MaintainerState) -> MaintainerState:
@@ -252,3 +279,6 @@ class MaintainerWorkflow:
         if int(state.get("retry_count", 0)) < self.max_retries:
             return "retry"
         return "package"
+
+    def _reflection_route(self, state: MaintainerState) -> str:
+        return "retry" if state.get("should_retry") else "package"
