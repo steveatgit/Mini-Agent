@@ -783,14 +783,14 @@ mini-agent maintain --repo /tmp/demo-repo --issue-file issue.md --test "pytest"
 ### P1：工程质量
 
 - [partial] 给 maintainer workflow 增加单元测试：
-  - [ ] repo scan
+  - [x] repo scan
   - [x] triage payload fallback
   - [x] context selection
   - [x] patch apply success/failure
-  - [ ] verification timeout
+  - [x] verification timeout
   - [x] reflect retry route
-- [ ] 给 CLI 增加解析测试。
-- [ ] 给 eval report 增加 snapshot 测试。
+- [x] 给 CLI 增加解析测试。
+- [x] 给 eval report 增加 snapshot 测试。
 - [ ] CI 中跳过需要真实 API key 的 LLM 集成测试。
 - [ ] 将需要真实模型的测试标记为 `@pytest.mark.integration`。
 

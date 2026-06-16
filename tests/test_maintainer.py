@@ -1,16 +1,29 @@
 import json
 import subprocess
+import sys
 from types import SimpleNamespace
 
-from mini_agent.cli import run_maintainer_cli, run_maintainer_eval_cli
+from pathlib import Path
+
+import pytest
+
+from mini_agent.cli import parse_args, run_maintainer_cli, run_maintainer_eval_cli
 from mini_agent.maintainer.artifacts import summarize_state_for_json
 from mini_agent.maintainer import run_maintainer
-from mini_agent.maintainer.evals import load_eval_task, load_eval_tasks, run_eval_tasks
+from mini_agent.maintainer.evals import (
+    MaintainerEvalRunResult,
+    MaintainerEvalTaskResult,
+    load_eval_task,
+    load_eval_tasks,
+    render_eval_report,
+    run_eval_tasks,
+)
 from mini_agent.maintainer.implementer import apply_unified_diff, extract_unified_diff
 from mini_agent.maintainer.planner import run_model_context_select
 from mini_agent.maintainer.pr_writer import render_model_pr_description
 from mini_agent.maintainer.prompts import ContextSelectionPayload, IssueTriagePayload
 from mini_agent.maintainer.reflector import classify_failure, reflect_on_failure
+from mini_agent.maintainer.repo_inspector import scan_repo
 from mini_agent.schema import LLMResponse
 
 
@@ -632,3 +645,93 @@ def test_run_eval_tasks_includes_failure_reason_for_failed_fixture(tmp_path):
     assert "failure_summary" in report
     assert "Command failed with exit code 1" in result.task_results[0].failure_summary
     assert run_dir.exists()
+
+
+def test_scan_repo_detects_key_files_and_tests(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    (repo / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
+    subprocess.run(["git", "add", "pyproject.toml"], cwd=repo, check=True, capture_output=True, text=True)
+
+    repo_map = scan_repo(repo)
+
+    assert repo_map["detected_test_command"] == "pytest"
+    assert "pyproject.toml" in repo_map["key_files"]
+    assert "tests/test_app.py" in repo_map["test_files"]
+
+
+def test_run_maintainer_verification_timeout_records_timeout(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+
+    result = run_maintainer(
+        repo,
+        "add should keep returning the sum\n\nExpected: tests pass.",
+        test_command="python -c 'import time; time.sleep(1.5)'",
+        workspace_dir=tmp_path,
+        run_id="timeout-demo",
+        use_langgraph=False,
+        verification_timeout=1,
+    )
+
+    assert result.status == "timeout"
+    assert result.state["verification_status"] == "timeout"
+    assert result.state["test_results"][-1]["status"] == "timeout"
+    assert "timed out" in result.state["test_results"][-1]["summary"]
+
+
+def test_cli_parse_args_handles_maintainer_commands(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "mini-agent",
+            "maintain-eval",
+            "--fixture-root",
+            "evals/fixtures",
+            "--tasks-dir",
+            "evals/tasks",
+            "--no-langgraph",
+            "--llm-pr",
+        ],
+    )
+
+    args = parse_args()
+
+    assert args.command == "maintain-eval"
+    assert args.fixture_root == "evals/fixtures"
+    assert args.no_langgraph is True
+    assert args.llm_pr is True
+
+
+def test_render_eval_report_includes_failure_and_repo_source(tmp_path):
+    run_result = MaintainerEvalRunResult(
+        tasks_dir=tmp_path / "tasks",
+        repo_path=None,
+        output_dir=tmp_path / "out",
+        task_results=[
+            MaintainerEvalTaskResult(
+                task_id="failure-001",
+                status="fail",
+                run_id="eval-failure-001",
+                run_dir=tmp_path / "out" / "artifacts" / "runs" / "eval-failure-001",
+                repo_source="/tmp/fixtures/failure-001/repo",
+                expected_behavior="The verification step should fail with exit code 1 so the report can explain the failure path.",
+                changed_files=[],
+                expected_files=["README.md"],
+                test_command="python -c 'import sys; sys.exit(1)'",
+                failure_summary="Command failed with exit code 1 and no output.",
+                failure_category="test_failed",
+                retry_count=0,
+            )
+        ],
+    )
+
+    report = render_eval_report(run_result)
+
+    assert "failure-001" in report
+    assert "repo_source: /tmp/fixtures/failure-001/repo" in report
+    assert "failure_summary: Command failed with exit code 1 and no output." in report
+    assert "expected_behavior: The verification step should fail" in report
