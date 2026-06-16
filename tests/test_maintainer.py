@@ -1,9 +1,9 @@
 import subprocess
 from types import SimpleNamespace
 
-from mini_agent.cli import run_maintainer_cli
+from mini_agent.cli import run_maintainer_cli, run_maintainer_eval_cli
 from mini_agent.maintainer import run_maintainer
-from mini_agent.maintainer.evals import load_eval_task, load_eval_tasks
+from mini_agent.maintainer.evals import load_eval_task, load_eval_tasks, run_eval_tasks
 from mini_agent.maintainer.prompts import ContextSelectionPayload, IssueTriagePayload
 
 
@@ -108,3 +108,46 @@ def test_load_eval_tasks_from_fixture_directory():
     assert "argument parsing" in task.issue_text
     assert task.test_command == "python -m pytest tests/test_cli.py"
     assert task.expected_files == ["src/demo_cli.py", "tests/test_cli.py"]
+
+
+def test_run_eval_tasks_writes_report_and_results(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    tasks_dir = tmp_path / "tasks"
+    task_dir = tasks_dir / "task-001"
+    task_dir.mkdir(parents=True)
+    (task_dir / "issue.md").write_text("add should pass\n\nExpected: tests pass.", encoding="utf-8")
+    (task_dir / "test_command.txt").write_text("python -m pytest tests/test_app.py\n", encoding="utf-8")
+    (task_dir / "expected_files.txt").write_text("app.py\n", encoding="utf-8")
+
+    result = run_eval_tasks(repo, tasks_dir, workspace_dir=tmp_path, output_dir=tmp_path / "eval-out", use_langgraph=False)
+
+    assert result.metrics["total"] == 1
+    assert result.metrics["test_pass_rate"] == 1.0
+    assert (tmp_path / "eval-out" / "eval_report.md").exists()
+    assert (tmp_path / "eval-out" / "eval_results.json").exists()
+
+
+def test_run_maintainer_eval_cli(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    tasks_dir = tmp_path / "tasks"
+    task_dir = tasks_dir / "task-001"
+    task_dir.mkdir(parents=True)
+    (task_dir / "issue.md").write_text("README task\n\nExpected: tests pass.", encoding="utf-8")
+    args = SimpleNamespace(
+        repo=str(repo),
+        tasks_dir=str(tasks_dir),
+        output_dir=str(tmp_path / "cli-eval-out"),
+        test_command="python -m pytest tests/test_app.py",
+        verification_timeout=120,
+        max_retries=0,
+        no_langgraph=True,
+    )
+
+    run_maintainer_eval_cli(args, tmp_path)
+
+    assert (tmp_path / "cli-eval-out" / "eval_report.md").exists()
+    assert (tmp_path / "cli-eval-out" / "eval_results.json").exists()

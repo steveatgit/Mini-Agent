@@ -47,6 +47,7 @@ from mini_agent.event_trace import (
 )
 from mini_agent.event_trace_runner import create_trace_llm_client, execute_event_trace, resolve_workspace_output_path, source_from_arg
 from mini_agent.maintainer import run_maintainer
+from mini_agent.maintainer.evals import run_eval_tasks
 from mini_agent.schema import LLMProvider
 from mini_agent.tools.base import Tool
 from mini_agent.tools.bash_tool import BashKillTool, BashOutputTool, BashTool
@@ -490,6 +491,42 @@ Examples:
         help="Maximum verification failure reflection retries. Defaults to 0 for deterministic MVP runs.",
     )
     maintain_parser.add_argument(
+        "--no-langgraph",
+        action="store_true",
+        help="Run the maintainer workflow fallback directly instead of LangGraph.",
+    )
+
+    maintain_eval_parser = subparsers.add_parser("maintain-eval", help="Run local OSS maintainer eval tasks")
+    maintain_eval_parser.add_argument("--repo", required=True, help="Path to the local git repository to evaluate against")
+    maintain_eval_parser.add_argument(
+        "--tasks-dir",
+        default="evals/tasks",
+        help="Directory containing eval task folders with issue.md files.",
+    )
+    maintain_eval_parser.add_argument(
+        "--output-dir",
+        default=None,
+        help="Directory for eval_results.json and eval_report.md. Defaults to workspace artifacts/evals/<tasks-dir-name>.",
+    )
+    maintain_eval_parser.add_argument(
+        "--test",
+        dest="test_command",
+        default=None,
+        help="Override every task's test command.",
+    )
+    maintain_eval_parser.add_argument(
+        "--verification-timeout",
+        type=int,
+        default=120,
+        help="Timeout in seconds for each verification command.",
+    )
+    maintain_eval_parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=0,
+        help="Maximum verification failure reflection retries per task.",
+    )
+    maintain_eval_parser.add_argument(
         "--no-langgraph",
         action="store_true",
         help="Run the maintainer workflow fallback directly instead of LangGraph.",
@@ -1209,6 +1246,29 @@ def run_maintainer_cli(args: argparse.Namespace, workspace_dir: Path) -> None:
     print(f"{Colors.DIM}Patch: {result.run_dir / 'final.patch'}{Colors.RESET}")
 
 
+def run_maintainer_eval_cli(args: argparse.Namespace, workspace_dir: Path) -> None:
+    """Run local maintainer eval tasks."""
+
+    result = run_eval_tasks(
+        repo_path=args.repo,
+        tasks_dir=args.tasks_dir,
+        workspace_dir=workspace_dir,
+        output_dir=args.output_dir,
+        verification_timeout=args.verification_timeout,
+        max_retries=args.max_retries,
+        use_langgraph=not args.no_langgraph,
+        test_command_override=args.test_command,
+    )
+    report_path = result.output_dir / "eval_report.md"
+    results_path = result.output_dir / "eval_results.json"
+    metrics = result.metrics
+    print(f"{Colors.GREEN}✅ Maintainer eval complete{Colors.RESET}")
+    print(f"{Colors.DIM}Tasks: {metrics['total']}{Colors.RESET}")
+    print(f"{Colors.DIM}Resolved rate: {metrics['resolved_rate']:.2f}{Colors.RESET}")
+    print(f"{Colors.DIM}Report: {report_path}{Colors.RESET}")
+    print(f"{Colors.DIM}Results: {results_path}{Colors.RESET}")
+
+
 def main():
     """Main entry point for CLI"""
     # Parse command line arguments
@@ -1247,6 +1307,15 @@ def main():
             workspace_dir = Path.cwd()
         workspace_dir.mkdir(parents=True, exist_ok=True)
         run_maintainer_cli(args, workspace_dir)
+        return
+
+    if args.command == "maintain-eval":
+        if args.workspace:
+            workspace_dir = Path(args.workspace).expanduser().absolute()
+        else:
+            workspace_dir = Path.cwd()
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        run_maintainer_eval_cli(args, workspace_dir)
         return
 
     # Determine workspace directory
