@@ -555,7 +555,7 @@ def test_extract_unified_diff_from_fenced_model_response():
     assert patch.endswith("\n")
 
 
-def test_patch_apply_rejects_malformed_hunk_header_before_git_apply(tmp_path):
+def test_patch_apply_normalizes_bare_hunk_header_before_git_apply(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     _init_repo(repo)
@@ -569,8 +569,27 @@ def test_patch_apply_rejects_malformed_hunk_header_before_git_apply(tmp_path):
 
     result = apply_unified_diff(repo, patch, allowed_files=["README.md"])
 
+    assert result.success
+    assert "@@ -1,1 +1,1 @@" in result.patch
+    assert (repo / "README.md").read_text(encoding="utf-8") == "# Changed\n"
+
+
+def test_patch_apply_rejects_unlocatable_bare_hunk_header_before_git_apply(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    patch = """diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@
+-# Missing
++# Changed
+"""
+
+    result = apply_unified_diff(repo, patch, allowed_files=["README.md"])
+
     assert not result.success
-    assert "malformed hunk header" in result.error
+    assert "could not infer line ranges" in result.error
     assert result.stderr == ""
 
 

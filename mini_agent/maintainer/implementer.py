@@ -86,7 +86,11 @@ def extract_unified_diff(text: str) -> str:
 def apply_unified_diff(repo_path: Path, patch: str, *, allowed_files: list[str]) -> PatchApplyResult:
     """Validate and apply a unified diff in repo_path."""
 
+    patch, normalize_error = _normalize_bare_hunk_headers(repo_path, patch)
     modified_files = files_touched_by_patch(patch)
+    if normalize_error:
+        return PatchApplyResult(success=False, patch=patch, error=normalize_error, modified_files=modified_files)
+
     hunk_error = _malformed_hunk_header(patch)
     if hunk_error:
         return PatchApplyResult(success=False, patch=patch, error=hunk_error, modified_files=modified_files)
@@ -197,6 +201,69 @@ def _malformed_hunk_header(patch: str) -> str:
         if line.startswith("@@") and not re.match(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@", line):
             return "Patch contains malformed hunk header; expected '@@ -old,count +new,count @@'."
     return ""
+
+
+def _normalize_bare_hunk_headers(repo_path: Path, patch: str) -> tuple[str, str]:
+    """Fill in line ranges for bare '@@' hunk headers when the old lines are locatable."""
+
+    lines = patch.splitlines()
+    output: list[str] = []
+    old_path = ""
+    index = 0
+    changed = False
+    while index < len(lines):
+        line = lines[index]
+        if line.startswith("--- "):
+            parts = line.split(maxsplit=1)
+            old_path = _clean_patch_path(parts[1]) if len(parts) == 2 and parts[1] != "/dev/null" else ""
+            output.append(line)
+            index += 1
+            continue
+        if line == "@@":
+            hunk_lines: list[str] = []
+            index += 1
+            while index < len(lines) and not lines[index].startswith(("diff --git ", "@@")):
+                hunk_lines.append(lines[index])
+                index += 1
+            header, error = _infer_hunk_header(repo_path, old_path, hunk_lines)
+            if error:
+                return patch, error
+            output.append(header)
+            output.extend(hunk_lines)
+            changed = True
+            continue
+        output.append(line)
+        index += 1
+
+    if not changed:
+        return patch, ""
+    return "\n".join(output) + ("\n" if patch.endswith("\n") else ""), ""
+
+
+def _infer_hunk_header(repo_path: Path, old_path: str, hunk_lines: list[str]) -> tuple[str, str]:
+    old_lines = [line[1:] for line in hunk_lines if line.startswith((" ", "-"))]
+    new_count = sum(1 for line in hunk_lines if line.startswith((" ", "+")))
+    old_count = len(old_lines)
+    if not old_path or not old_lines:
+        return "", "Patch contains bare hunk header without enough context to infer line ranges."
+
+    file_path = repo_path / old_path
+    try:
+        file_lines = file_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return "", f"Patch contains bare hunk header for unreadable file: {old_path}"
+
+    start = _find_subsequence(file_lines, old_lines)
+    if start is None:
+        return "", "Patch contains malformed hunk header; could not infer line ranges from file content."
+    return f"@@ -{start + 1},{old_count} +{start + 1},{new_count} @@", ""
+
+
+def _find_subsequence(lines: list[str], wanted: list[str]) -> int | None:
+    for start in range(0, len(lines) - len(wanted) + 1):
+        if lines[start : start + len(wanted)] == wanted:
+            return start
+    return None
 
 
 def _usage_dict(usage: TokenUsage | None) -> dict[str, int] | None:
