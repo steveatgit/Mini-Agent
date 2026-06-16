@@ -8,6 +8,11 @@ from pathlib import Path
 from typing import Any
 
 
+_MAX_STATE_STRING = 1200
+_MAX_STATE_LIST_ITEMS = 60
+_MAX_STATE_DICT_ITEMS = 80
+
+
 def make_run_id(slug: str | None = None) -> str:
     """Create a timestamped run id."""
 
@@ -43,3 +48,47 @@ class ArtifactWriter:
         event = {"time": datetime.now().isoformat(timespec="seconds"), **event}
         with self.trace_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+
+def summarize_state_for_json(payload: Any) -> Any:
+    """Reduce large runtime state to a JSON-safe, compact structure."""
+
+    if payload is None or isinstance(payload, (bool, int, float)):
+        return payload
+    if isinstance(payload, str):
+        return payload if len(payload) <= _MAX_STATE_STRING else payload[:_MAX_STATE_STRING] + "\n...[truncated]"
+    if isinstance(payload, Path):
+        return str(payload)
+    if isinstance(payload, dict):
+        items = list(payload.items())
+        summarized: dict[str, Any] = {}
+        for key, value in items[:_MAX_STATE_DICT_ITEMS]:
+            if key == "test_results" and isinstance(value, list):
+                summarized[key] = [_summarize_test_result(item) for item in value[:_MAX_STATE_LIST_ITEMS]]
+            else:
+                summarized[key] = summarize_state_for_json(value)
+        if len(items) > _MAX_STATE_DICT_ITEMS:
+            summarized["...truncated_keys"] = len(items) - _MAX_STATE_DICT_ITEMS
+        return summarized
+    if isinstance(payload, list):
+        items = [summarize_state_for_json(item) for item in payload[:_MAX_STATE_LIST_ITEMS]]
+        if len(payload) > _MAX_STATE_LIST_ITEMS:
+            items.append(f"...truncated {len(payload) - _MAX_STATE_LIST_ITEMS} items")
+        return items
+    if isinstance(payload, tuple):
+        return summarize_state_for_json(list(payload))
+    return str(payload)
+
+
+def _summarize_test_result(result: Any) -> Any:
+    if not isinstance(result, dict):
+        return summarize_state_for_json(result)
+    keep = {
+        "command",
+        "exit_code",
+        "status",
+        "duration_seconds",
+        "summary",
+    }
+    summarized = {key: summarize_state_for_json(value) for key, value in result.items() if key in keep}
+    return summarized

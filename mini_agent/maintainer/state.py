@@ -21,6 +21,8 @@ class MaintainerState(TypedDict, total=False):
     plan_payload: dict[str, Any]
     selected_context: str
     implementation_notes: list[str]
+    node_timings: dict[str, float]
+    model_call_counts: dict[str, int]
 
     changed_files: list[str]
     diff: str

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 
@@ -67,15 +68,15 @@ class MaintainerWorkflow:
             return None
 
         graph = StateGraph(MaintainerState)
-        graph.add_node("bootstrap_run", self.bootstrap_run)
-        graph.add_node("repo_scan", self.repo_scan)
-        graph.add_node("issue_triage", self.issue_triage)
-        graph.add_node("context_select", self.context_select)
-        graph.add_node("plan_patch", self.plan_patch)
-        graph.add_node("implement_patch", self.implement_patch)
-        graph.add_node("run_verification", self.run_verification)
-        graph.add_node("reflect_failure", self.reflect_failure)
-        graph.add_node("package_artifacts", self.package_artifacts)
+        graph.add_node("bootstrap_run", self._timed_node("bootstrap_run", self.bootstrap_run))
+        graph.add_node("repo_scan", self._timed_node("repo_scan", self.repo_scan))
+        graph.add_node("issue_triage", self._timed_node("issue_triage", self.issue_triage))
+        graph.add_node("context_select", self._timed_node("context_select", self.context_select))
+        graph.add_node("plan_patch", self._timed_node("plan_patch", self.plan_patch))
+        graph.add_node("implement_patch", self._timed_node("implement_patch", self.implement_patch))
+        graph.add_node("run_verification", self._timed_node("run_verification", self.run_verification))
+        graph.add_node("reflect_failure", self._timed_node("reflect_failure", self.reflect_failure))
+        graph.add_node("package_artifacts", self._timed_node("package_artifacts", self.package_artifacts))
 
         graph.set_entry_point("bootstrap_run")
         graph.add_edge("bootstrap_run", "repo_scan")
@@ -94,20 +95,20 @@ class MaintainerWorkflow:
         return graph.compile()
 
     def _run_fallback(self, state: MaintainerState) -> MaintainerState:
-        state = self.bootstrap_run(state)
-        state = self.repo_scan(state)
-        state = self.issue_triage(state)
-        state = self.context_select(state)
-        state = self.plan_patch(state)
+        state = self._timed_node("bootstrap_run", self.bootstrap_run)(state)
+        state = self._timed_node("repo_scan", self.repo_scan)(state)
+        state = self._timed_node("issue_triage", self.issue_triage)(state)
+        state = self._timed_node("context_select", self.context_select)(state)
+        state = self._timed_node("plan_patch", self.plan_patch)(state)
         while True:
-            state = self.implement_patch(state)
-            state = self.run_verification(state)
+            state = self._timed_node("implement_patch", self.implement_patch)(state)
+            state = self._timed_node("run_verification", self.run_verification)(state)
             if self._verification_route(state) != "retry":
                 break
-            state = self.reflect_failure(state)
+            state = self._timed_node("reflect_failure", self.reflect_failure)(state)
             if self._reflection_route(state) != "retry":
                 break
-        return self.package_artifacts(state)
+        return self._timed_node("package_artifacts", self.package_artifacts)(state)
 
     def bootstrap_run(self, state: MaintainerState) -> MaintainerState:
         self.artifacts.write_json(
@@ -135,6 +136,7 @@ class MaintainerWorkflow:
     def issue_triage(self, state: MaintainerState) -> MaintainerState:
         planner_error = None
         if self.planner_client is not None:
+            self._increment_model_calls(state, "planner")
             payload, planner_error = run_model_triage(
                 client=self.planner_client,
                 issue_text=state.get("issue_text", ""),
@@ -162,6 +164,7 @@ class MaintainerWorkflow:
     def context_select(self, state: MaintainerState) -> MaintainerState:
         planner_error = None
         if self.planner_client is not None:
+            self._increment_model_calls(state, "planner")
             payload, planner_error = run_model_context_select(
                 client=self.planner_client,
                 issue_text=state.get("issue_text", ""),
@@ -193,6 +196,7 @@ class MaintainerWorkflow:
         planner_error = None
         plan_payload: dict[str, Any] | None = None
         if self.planner_client is not None:
+            self._increment_model_calls(state, "planner")
             payload, planner_error = run_model_patch_plan(
                 client=self.planner_client,
                 issue_text=state.get("issue_text", ""),
@@ -242,6 +246,7 @@ class MaintainerWorkflow:
 
     def implement_patch(self, state: MaintainerState) -> MaintainerState:
         if self.implementer_client is not None:
+            self._increment_model_calls(state, "implementer")
             result = run_model_implementer(
                 client=self.implementer_client,
                 repo_path=self.repo_path,
@@ -306,6 +311,8 @@ class MaintainerWorkflow:
     def reflect_failure(self, state: MaintainerState) -> MaintainerState:
         retry_count = int(state.get("retry_count", 0)) + 1
         state["retry_count"] = retry_count
+        if self.verifier_client is not None:
+            self._increment_model_calls(state, "verifier")
         reflection = reflect_on_failure(
             test_results=state.get("test_results", []),
             diff=git_diff(self.repo_path),
@@ -353,6 +360,8 @@ class MaintainerWorkflow:
             plan=state.get("plan", ""),
             failure_summary=state.get("failure_summary", ""),
         )
+        if self.pr_writer_client is not None:
+            self._increment_model_calls(state, "pr_writer")
         state["pr_description"] = pr_description
         self.artifacts.write_text("pr_description.md", pr_description)
 
@@ -360,7 +369,7 @@ class MaintainerWorkflow:
         state["final_report"] = summary
         state["artifacts_dir"] = str(self.artifacts.run_dir)
         self.artifacts.write_text("run_summary.md", summary)
-        self.artifacts.write_json("state.json", state)
+        self.artifacts.write_json("state.json", self._summarize_state(state))
         self.artifacts.append_trace(
             {
                 "node": "package_artifacts",
@@ -371,6 +380,29 @@ class MaintainerWorkflow:
             }
         )
         return state
+
+    def _timed_node(self, name: str, fn):
+        def wrapper(state: MaintainerState) -> MaintainerState:
+            start = time.monotonic()
+            try:
+                return fn(state)
+            finally:
+                duration = round(time.monotonic() - start, 3)
+                timings = dict(state.get("node_timings", {}))
+                timings[name] = round(float(timings.get(name, 0.0)) + duration, 3)
+                state["node_timings"] = timings
+
+        return wrapper
+
+    def _increment_model_calls(self, state: MaintainerState, role: str) -> None:
+        counts = dict(state.get("model_call_counts", {}))
+        counts[role] = int(counts.get(role, 0)) + 1
+        state["model_call_counts"] = counts
+
+    def _summarize_state(self, state: MaintainerState) -> dict[str, Any]:
+        from .artifacts import summarize_state_for_json
+
+        return summarize_state_for_json(state)
 
     def _verification_route(self, state: MaintainerState) -> str:
         if state.get("verification_status") == "pass":

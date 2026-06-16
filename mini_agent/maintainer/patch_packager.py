@@ -71,6 +71,9 @@ def render_run_summary(state: dict[str, Any]) -> str:
     changed = state.get("changed_files", [])
     tests = state.get("test_results", [])
     latest_test = tests[-1] if tests else {}
+    node_timings = state.get("node_timings", {})
+    model_call_counts = state.get("model_call_counts", {})
+    total_model_calls = sum(int(count) for count in model_call_counts.values()) if model_call_counts else 0
     lines = [
         "# Run Summary",
         "",
@@ -92,7 +95,29 @@ def render_run_summary(state: dict[str, Any]) -> str:
             "## Verification",
             f"- command: `{latest_test.get('command') or 'none'}`",
             f"- exit_code: {latest_test.get('exit_code')}",
+            f"- duration_seconds: {latest_test.get('duration_seconds')}",
             f"- summary: {latest_test.get('summary', 'No verification result.')}",
+            "",
+            "## Node Timings",
+        ]
+    )
+    if node_timings:
+        lines.extend(f"- {name}: {duration}" for name, duration in sorted(node_timings.items()))
+    else:
+        lines.append("- none recorded")
+    lines.extend(
+        [
+            "",
+            "## Model Calls",
+            f"- total: {total_model_calls}",
+        ]
+    )
+    if model_call_counts:
+        lines.extend(f"- {name}: {count}" for name, count in sorted(model_call_counts.items()))
+    else:
+        lines.append("- none")
+    lines.extend(
+        [
             "",
             "## Risk",
             "- The first maintainer MVP packages local changes and verification artifacts; automatic code implementation is intentionally narrow until the model node is wired in.",

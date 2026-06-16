@@ -710,8 +710,8 @@ mini-agent maintain --repo /tmp/demo-repo --issue-file issue.md --test "pytest"
   - 关键改动
   - 验证方式
   - 风险和回滚建议
-- [ ] 生成 `run_summary.md` 时包含节点耗时、测试耗时、模型调用次数。
-- [ ] 输出 `state.json` 时过滤过长日志，只保留摘要和 artifact 路径。
+- [x] 生成 `run_summary.md` 时包含节点耗时、测试耗时、模型调用次数。
+- [x] 输出 `state.json` 时过滤过长日志，只保留摘要和 artifact 路径。
 
 ### P1：可观测性和 token 统计
 
@@ -753,17 +753,17 @@ mini-agent maintain --repo /tmp/demo-repo --issue-file issue.md --test "pytest"
 
 ### P0：真实 eval fixture
 
-- [ ] 新增 `evals/fixtures/`，放 3 个小型可复制 repo。
-- [ ] 每个 fixture 都要有：
+- [x] 新增 `evals/fixtures/`，放 3 个小型可复制 repo。
+- [x] 每个 fixture 都要有：
   - 初始代码
   - failing test
   - issue.md
   - test_command.txt
   - expected_files.txt
   - expected_behavior.md
-- [ ] 将当前 `evals/tasks/*` 从“任务描述”升级为可实际运行的 fixture 或 repo_ref。
-- [ ] 新增 `maintain-eval --fixture-root`，自动复制 fixture 到临时目录再运行。
-- [ ] eval 结束后保留每个任务的 run artifacts。
+- [x] 将当前 `evals/tasks/*` 从“任务描述”升级为可实际运行的 fixture 或 repo_ref。
+- [x] 新增 `maintain-eval --fixture-root`，自动复制 fixture 到临时目录再运行。
+- [x] eval 结束后保留每个任务的 run artifacts。
 - [ ] 准备至少 1 个失败案例，报告中能解释失败原因。
 
 ### P1：Demo 和文档

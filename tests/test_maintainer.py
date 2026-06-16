@@ -3,6 +3,7 @@ import subprocess
 from types import SimpleNamespace
 
 from mini_agent.cli import run_maintainer_cli, run_maintainer_eval_cli
+from mini_agent.maintainer.artifacts import summarize_state_for_json
 from mini_agent.maintainer import run_maintainer
 from mini_agent.maintainer.evals import load_eval_task, load_eval_tasks, run_eval_tasks
 from mini_agent.maintainer.implementer import apply_unified_diff, extract_unified_diff
@@ -235,6 +236,85 @@ def test_run_maintainer_with_fake_pr_writer_writes_model_description(tmp_path):
     assert '"pr_writer_mode": "llm"' in trace
 
 
+def test_run_maintainer_run_summary_includes_timings_and_model_counts(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    planner = FakePlanClient(
+        [
+            {
+                "issue_type": "bug",
+                "summary": "add should support numeric strings",
+                "keywords": ["add", "numeric"],
+                "suspected_files": ["app.py", "tests/test_app.py"],
+                "acceptance_criteria": ["tests pass"],
+            },
+            {"files": ["app.py", "tests/test_app.py"], "rationale": "implementation and coverage"},
+            {
+                "target_files": ["app.py", "tests/test_app.py"],
+                "changes": ["Coerce add inputs before summing."],
+                "test_strategy": ["Run the provided pytest command."],
+                "risks": ["Low risk."],
+            },
+        ]
+    )
+    pr_writer = FakePRClient(
+        "# PR Description\n\n"
+        "## Summary\n- Model generated summary.\n\n"
+        "## Issue Context\n- Covers the add issue.\n\n"
+        "## Key Changes\n- No changes needed.\n\n"
+        "## Verification\n- pytest passed.\n\n"
+        "## Risk and Rollback\n- Revert final.patch if needed.\n"
+    )
+
+    result = run_maintainer(
+        repo,
+        "app.py add should support numeric strings\n\nExpected: tests pass.",
+        test_command="python -m pytest tests/test_app.py",
+        workspace_dir=tmp_path,
+        run_id="summary-demo",
+        use_langgraph=False,
+        planner_client=planner,
+        implementer_client=FakePatchClient(
+            """diff --git a/app.py b/app.py
+--- a/app.py
++++ b/app.py
+@@ -1,2 +1,2 @@
+ def add(a, b):
+-    return a + b
++    return int(a) + int(b)
+"""
+        ),
+        pr_writer_client=pr_writer,
+    )
+
+    run_dir = tmp_path / "artifacts" / "runs" / "summary-demo"
+    summary = (run_dir / "run_summary.md").read_text(encoding="utf-8")
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+
+    assert result.status == "pass"
+    assert "## Node Timings" in summary
+    assert "## Model Calls" in summary
+    assert state["node_timings"]["plan_patch"] >= 0
+    assert state["model_call_counts"]["planner"] == 3
+    assert state["model_call_counts"]["implementer"] == 1
+    assert state["model_call_counts"]["pr_writer"] == 1
+
+
+def test_summarize_state_for_json_truncates_large_payloads():
+    payload = {
+        "stdout": "x" * 5000,
+        "test_results": [{"command": "pytest", "status": "fail", "exit_code": 1, "summary": "oops", "stdout": "y" * 4000, "stderr": "z" * 4000}],
+        "nested": {"items": list(range(100))},
+    }
+
+    summarized = summarize_state_for_json(payload)
+
+    assert len(summarized["stdout"]) < 1300
+    assert "stdout" not in summarized["test_results"][0]
+    assert len(summarized["nested"]["items"]) <= 61
+
+
 def test_pr_writer_fallback_includes_rollback_guidance():
     markdown, error = render_model_pr_description(
         client=None,
@@ -393,6 +473,7 @@ def test_load_eval_tasks_from_fixture_directory():
     assert "argument parsing" in task.issue_text
     assert task.test_command == "python -m pytest tests/test_cli.py"
     assert task.expected_files == ["src/demo_cli.py", "tests/test_cli.py"]
+    assert task.repo_ref == "python-cli-001"
 
 
 def test_run_eval_tasks_writes_report_and_results(tmp_path):
@@ -425,6 +506,7 @@ def test_run_maintainer_eval_cli(tmp_path):
     args = SimpleNamespace(
         repo=str(repo),
         tasks_dir=str(tasks_dir),
+        fixture_root=None,
         output_dir=str(tmp_path / "cli-eval-out"),
         test_command="python -m pytest tests/test_app.py",
         verification_timeout=120,
@@ -440,3 +522,64 @@ def test_run_maintainer_eval_cli(tmp_path):
 
     assert (tmp_path / "cli-eval-out" / "eval_report.md").exists()
     assert (tmp_path / "cli-eval-out" / "eval_results.json").exists()
+
+
+def test_run_maintainer_eval_cli_with_fixture_root(tmp_path):
+    fixture_root = tmp_path / "fixtures"
+    task_root = tmp_path / "tasks"
+    fixture_repo = fixture_root / "python-cli-001" / "repo"
+    fixture_repo.mkdir(parents=True)
+    (fixture_root / "python-cli-001" / "issue.md").write_text(
+        "Fix empty CLI names.\n\nExpected: empty names raise a validation error.",
+        encoding="utf-8",
+    )
+    (fixture_root / "python-cli-001" / "test_command.txt").write_text("PYTHONPATH=src python -m pytest tests/test_cli.py\n", encoding="utf-8")
+    (fixture_root / "python-cli-001" / "expected_files.txt").write_text("src/demo_cli.py\ntests/test_cli.py\n", encoding="utf-8")
+    (fixture_root / "python-cli-001" / "expected_behavior.md").write_text("Empty names must fail validation.", encoding="utf-8")
+    (fixture_repo / "src").mkdir()
+    (fixture_repo / "src/__init__.py").write_text("", encoding="utf-8")
+    (fixture_repo / "src/demo_cli.py").write_text(
+        "def greet(name):\n    return f\"Hello, {name}!\"\n",
+        encoding="utf-8",
+    )
+    tests_dir = fixture_repo / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_cli.py").write_text(
+        "import pytest\nfrom src.demo_cli import greet\n\n\ndef test_empty_name_raises():\n    with pytest.raises(ValueError):\n        greet(\"\")\n",
+        encoding="utf-8",
+    )
+    task_dir = task_root / "python-cli-001"
+    task_dir.mkdir(parents=True)
+    (task_dir / "issue.md").write_text("Fix empty CLI names.\n\nExpected: empty names raise a validation error.", encoding="utf-8")
+    (task_dir / "test_command.txt").write_text("PYTHONPATH=src python -m pytest tests/test_cli.py\n", encoding="utf-8")
+    (task_dir / "expected_files.txt").write_text("src/demo_cli.py\ntests/test_cli.py\n", encoding="utf-8")
+    (task_dir / "repo_ref.txt").write_text("python-cli-001\n", encoding="utf-8")
+    patch = """diff --git a/src/demo_cli.py b/src/demo_cli.py
+--- a/src/demo_cli.py
++++ b/src/demo_cli.py
+@@ -1,2 +1,4 @@
+ def greet(name):
+-    return f"Hello, {name}!"
++    if not name:
++        raise ValueError("name is required")
++    return f"Hello, {name}!"
+"""
+    result = run_eval_tasks(
+        repo_path=None,
+        tasks_dir=task_root,
+        workspace_dir=tmp_path,
+        output_dir=tmp_path / "fixture-eval-out",
+        fixture_root=fixture_root,
+        use_langgraph=False,
+        implementer_client=FakePatchClient(patch),
+    )
+
+    run_dir = tmp_path / "fixture-eval-out" / "artifacts" / "runs" / "eval-python-cli-001"
+    assert result.metrics["total"] == 1
+    assert result.task_results[0].status == "pass"
+    assert result.task_results[0].repo_source.endswith("/python-cli-001/repo")
+    summary = (run_dir / "run_summary.md").read_text(encoding="utf-8")
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    assert "## Node Timings" in summary
+    assert "## Model Calls" in summary
+    assert state["model_call_counts"]["implementer"] == 1

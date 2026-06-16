@@ -56,6 +56,8 @@ def run_maintainer(
         "test_command": test_command,
         "retry_count": 0,
         "implementation_notes": [],
+        "node_timings": {},
+        "model_call_counts": {},
     }
     workflow = MaintainerWorkflow(
         repo,

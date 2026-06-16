@@ -518,11 +518,16 @@ Examples:
     )
 
     maintain_eval_parser = subparsers.add_parser("maintain-eval", help="Run local OSS maintainer eval tasks")
-    maintain_eval_parser.add_argument("--repo", required=True, help="Path to the local git repository to evaluate against")
+    maintain_eval_parser.add_argument("--repo", default=None, help="Path to the local git repository to evaluate against")
     maintain_eval_parser.add_argument(
         "--tasks-dir",
         default="evals/tasks",
         help="Directory containing eval task folders with issue.md files.",
+    )
+    maintain_eval_parser.add_argument(
+        "--fixture-root",
+        default=None,
+        help="Directory containing fixture repos. When set, each task is run against a copied fixture repo.",
     )
     maintain_eval_parser.add_argument(
         "--output-dir",
@@ -1296,11 +1301,14 @@ def run_maintainer_eval_cli(args: argparse.Namespace, workspace_dir: Path) -> No
     """Run local maintainer eval tasks."""
 
     roles = _maintainer_llm_roles(args.llm_plan, args.llm_implement, args.llm_reflect, args.llm_pr)
+    if not args.repo and not args.fixture_root:
+        raise ValueError("maintain-eval requires either --repo or --fixture-root")
     result = run_eval_tasks(
         repo_path=args.repo,
         tasks_dir=args.tasks_dir,
         workspace_dir=workspace_dir,
         output_dir=args.output_dir,
+        fixture_root=args.fixture_root,
         verification_timeout=args.verification_timeout,
         max_retries=args.max_retries,
         use_langgraph=not args.no_langgraph,
