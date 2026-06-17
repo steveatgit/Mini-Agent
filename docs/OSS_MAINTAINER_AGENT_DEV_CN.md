@@ -729,6 +729,20 @@ mini-agent maintain --repo /tmp/demo-repo --issue-file issue.md --test "pytest"
   - `patch_apply_success_rate`
   - `retry_success_rate`
 
+### P1：LLM 调用链路性能优化
+
+当前模型模式为了可观察和可控，把 `issue_triage`、`context_select`、`plan_patch`、`implement_patch`、`package_artifacts` 拆成多次串行 LLM 调用。小任务在 OpenRouter 免费模型路由下会被 HTTP 往返、排队、冷启动和限流放大，单个 fixture 可能出现 40s+ 耗时；测试本身通常只占 1-2s。下一步优化目标是保留审计能力，但减少不必要的模型往返。
+
+- [ ] 新增 fast/eval profile：默认只启用 `--llm-implement`，triage/context/plan/PR 文案走 deterministic fallback。
+- [ ] 将 `issue_triage`、`context_select`、`plan_patch` 合并为一个 planner 调用，或在简单任务中直接并入 implementer prompt。
+- [ ] 对 README、单文件修复、明确 `expected_files` 的 fixture 增加 short-circuit：跳过 LLM triage/context/plan，直接构造最小上下文。
+- [ ] 将 `package_artifacts` 中的 PR writer 改为可选且不计入 eval resolved latency；eval 默认生成规则版 PR 描述。
+- [ ] 在 `repo_scan` 后并行执行可并行的上下文收集：`rg` 关键词、读取候选源文件、读取测试文件、读取 README/配置文件、读取 `git status`/`git diff`。
+- [ ] 支持 `maintain-eval --jobs N`，每个 fixture 复制到独立临时 repo 后并发运行多个 case；单个 case 内仍保持 `implement -> verify -> reflect` 的数据依赖顺序。
+- [ ] 在 eval report 中拆分 `llm_duration_seconds`、`verification_duration_seconds`、`artifact_duration_seconds`，避免总耗时掩盖具体瓶颈。
+- [ ] 记录每次 LLM 调用的 provider/model/base_url、prompt_tokens、completion_tokens、duration 和 retry 次数，方便区分模型生成慢、路由排队慢和网络慢。
+- [ ] 增加 `--model-profile fast|accurate|free` 或配置模板：fast profile 使用低延迟付费/本地模型，free profile 保持 OpenRouter 免费模型但提示预期耗时较长。
+
 ## 17. 第三批开发任务清单：安全、评测和展示
 
 目标：让项目适合面试展示和持续迭代，不只是单次 demo。

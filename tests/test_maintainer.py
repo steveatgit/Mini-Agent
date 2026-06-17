@@ -18,6 +18,7 @@ from mini_agent.maintainer.evals import (
     render_eval_report,
     run_eval_tasks,
 )
+from mini_agent.maintainer.graph import _merge_context_file_candidates
 from mini_agent.maintainer.implementer import apply_unified_diff, extract_unified_diff
 from mini_agent.maintainer.planner import run_model_context_select
 from mini_agent.maintainer.pr_writer import render_model_pr_description
@@ -58,6 +59,16 @@ class FakePlanClient:
     async def generate(self, messages, tools=None):
         self.messages.append(messages)
         return LLMResponse(content=json.dumps(self.payloads.pop(0)), finish_reason="stop", usage=self.usage)
+
+
+class RawPlanClient:
+    def __init__(self, content: str):
+        self.content = content
+        self.messages = []
+
+    async def generate(self, messages, tools=None):
+        self.messages.append(messages)
+        return LLMResponse(content=self.content, finish_reason="stop")
 
 
 class FakePRClient:
@@ -426,6 +437,31 @@ def test_model_context_select_filters_to_existing_repo_files():
     assert payload.files == ["app.py", "tests/test_app.py"]
 
 
+def test_model_context_select_accepts_trailing_model_text():
+    client = RawPlanClient('{"files": ["src/slug.py"], "rationale": "focused"}\nDone.')
+    payload, error, usage = run_model_context_select(
+        client=client,
+        issue_text="fix slug",
+        repo_map={"files": ["src/slug.py", "tests/test_slug.py"]},
+        triage={},
+    )
+
+    assert error is None
+    assert usage is None
+    assert payload is not None
+    assert payload.files == ["src/slug.py"]
+
+
+def test_context_file_merge_keeps_triage_implementation_file_before_test_file():
+    selected = _merge_context_file_candidates(
+        ["src/slug.py"],
+        [],
+        {"files": ["tests/test_slug.py", "src/__init__.py", "src/slug.py"], "test_files": ["tests/test_slug.py"]},
+    )
+
+    assert selected == ["src/slug.py", "tests/test_slug.py"]
+
+
 def test_run_maintainer_reflects_failed_verification_without_retry_loop(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -555,6 +591,22 @@ def test_extract_unified_diff_from_fenced_model_response():
     assert patch.endswith("\n")
 
 
+def test_extract_unified_diff_removes_apply_patch_end_marker():
+    text = """diff --git a/a.py b/a.py
+--- a/a.py
++++ b/a.py
+@@ -1 +1 @@
+-a
++b
+*** End of File ***
+"""
+
+    patch = extract_unified_diff(text)
+
+    assert "*** End of File ***" not in patch
+    assert patch.endswith("+b\n")
+
+
 def test_patch_apply_normalizes_bare_hunk_header_before_git_apply(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -562,6 +614,23 @@ def test_patch_apply_normalizes_bare_hunk_header_before_git_apply(tmp_path):
     patch = """diff --git a/README.md b/README.md
 --- a/README.md
 +++ b/README.md
+@@
+-# Demo
++# Changed
+"""
+
+    result = apply_unified_diff(repo, patch, allowed_files=["README.md"])
+
+    assert result.success
+    assert "@@ -1,1 +1,1 @@" in result.patch
+    assert (repo / "README.md").read_text(encoding="utf-8") == "# Changed\n"
+
+
+def test_patch_apply_normalizes_bare_hunk_header_without_file_headers(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    patch = """diff --git a/README.md b/README.md
 @@
 -# Demo
 +# Changed

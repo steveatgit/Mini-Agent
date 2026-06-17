@@ -140,10 +140,9 @@ def _extract_json_object(text: str) -> dict[str, Any]:
     fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
     raw = fenced.group(1) if fenced else text
     start = raw.find("{")
-    end = raw.rfind("}")
-    if start < 0 or end < start:
+    if start < 0:
         raise ValueError("Planner response did not contain a JSON object.")
-    data = json.loads(raw[start : end + 1])
+    data, _ = json.JSONDecoder().raw_decode(raw[start:])
     if not isinstance(data, dict):
         raise ValueError("Planner response JSON must be an object.")
     return data

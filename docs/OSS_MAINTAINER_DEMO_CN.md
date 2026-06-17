@@ -87,7 +87,52 @@ uv run python -m mini_agent.cli maintain-eval \
 - 强调报告里会保留 `failure_category` 和 `failure_summary`。
 - 如果启用了 implementer 和 verifier，可以展示失败后进入 reflection，再决定是否重试。
 
-## 5. 结尾
+## 5. 最近一次失败复盘
+
+最新一轮 LLM eval 曾出现 4 个 case 只有 1 个通过。复盘后发现，失败并不都是模型“不会修”，而是暴露了 maintainer workflow 当前的几个系统性薄弱点。
+
+### 失败原因简记
+
+- `docs-001`
+  - 现象：README 修复任务第一次失败。
+  - 原因：模型生成的 unified diff 使用了裸 `@@` hunk header，没有 `@@ -old,count +new,count @@` 行号，patch 被本地校验拒绝。
+  - 修复：在 `apply_unified_diff` 前增加裸 hunk 规范化。能根据当前文件内容定位旧行时，自动补齐合法 hunk header。
+
+- `python-cli-001`
+  - 现象：模型已经生成了正确的 `ValueError` 校验逻辑，但测试仍失败。
+  - 原因：模型 patch 混入了 `*** End of File ***` 这类非 unified diff 标记，导致 hunk 定位失败，补丁没有应用。
+  - 修复：提取模型 diff 时清理非 diff sentinel；同时补测试覆盖这类模型输出。
+
+- `python-cli-002`
+  - 现象：slug 修复多次失败，第一次失败是 patch apply 问题，后续失败是模型只处理空白字符，没有处理 `!` 等标点。
+  - 原因一：模型返回过缺少 `---/+++` 文件头的 `diff --git + @@` 片段，`git apply` 会报 patch fragment without header。
+  - 原因二：`context_select` 在 LLM 输出解析失败后回退到规则选择，但只选中了 `tests/test_slug.py`，覆盖掉 triage 已经识别出的 `src/slug.py`。
+  - 原因三：只把实现文件放进上下文时，模型没有稳定看到测试断言 `normalize_slug("Hello  World!") == "hello-world"`，容易把 separator 理解成 whitespace。
+  - 修复：缺失文件头时根据 `diff --git a/x b/x` 补 `---/+++`；context 选择改为合并 triage 文件、context 文件和测试文件，避免丢掉实现文件或断言。
+
+- `failure-001`
+  - 现象：报告中仍显示 fail。
+  - 原因：这是故意失败 fixture，验证命令固定为 `python -c 'import sys; sys.exit(1)'`，目标是展示失败分类和摘要，不应按“修复成功”任务理解。
+  - 后续：eval report 可以增加 expected-failure / xfail 语义，把“预期失败路径验证成功”和“修复任务失败”区分开。
+
+### 归纳出的当前问题
+
+- 模型输出格式不稳定：即使 prompt 要求 unified diff，仍可能出现裸 `@@`、缺文件头、`*** End of File ***` 或额外文本。
+- 上下文选择过脆弱：单个 planner/context 节点失败时，fallback 可能只选测试或只选实现，导致 implementer 缺关键信息。
+- LLM 调用链路过长：triage、context、plan、implement、reflect、PR writer 多次串行调用，耗时主要花在模型路由和重试，而不是测试。
+- eval 指标语义还不够细：故意失败 case 被计入普通 fail，会拉低 resolved rate，也容易误导 demo 解读。
+- 失败重试仍偏被动：patch apply 失败和测试失败都进入同一 retry 链路，但对“格式错误可自动修复”和“实现逻辑错误需补上下文”的区分还不够明确。
+
+### 进一步优化方向
+
+- 增加 `expected_failure` / `xfail` 任务类型，让 `failure-001` 这类任务独立计入 failure-path coverage。
+- 对模型 diff 做更完整的 normalize：清理非 diff 标记、补 hunk header、补文件头，并把每次 normalize 写入 trace。
+- context selection 使用保守合并策略：triage suspected files、LLM selected files、规则 selected files、相关 test files 取并集，按上限裁剪。
+- 对简单 fixture 增加 fast path：明确 `expected_files` 时直接把这些文件和对应测试放进上下文，减少 planner 失败面。
+- eval 默认关闭 LLM PR writer，或不把 PR writer 计入 resolved latency；PR 文案可在通过后异步生成。
+- 在 report 中拆分 LLM 耗时、测试耗时、patch normalize 耗时、API retry 次数，便于判断瓶颈是模型、网络还是本地工具。
+
+## 6. 结尾
 
 收束成一句：
 

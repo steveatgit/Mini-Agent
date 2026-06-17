@@ -190,6 +190,11 @@ class MaintainerWorkflow:
         if not selected_files:
             selected_files = select_context_files(state.get("issue_text", ""), state.get("repo_map", {}))
             llm_summary = self._summarize_context(selected_files, False)
+        selected_files = _merge_context_file_candidates(
+            state.get("suspected_files", []),
+            selected_files,
+            state.get("repo_map", {}),
+        )
         if not selected_files:
             selected_files = state.get("suspected_files", [])
             llm_summary = self._summarize_context(selected_files, False)
@@ -536,3 +541,17 @@ class MaintainerWorkflow:
 
     def _reflection_route(self, state: MaintainerState) -> str:
         return "retry" if state.get("should_retry") else "package"
+
+
+def _merge_context_file_candidates(triage_files: list[str], selected_files: list[str], repo_map: dict[str, Any], max_files: int = 8) -> list[str]:
+    repo_files = set(str(path) for path in repo_map.get("files", []))
+    merged: list[str] = []
+    test_files = [str(path) for path in repo_map.get("test_files", [])]
+    for file_path in [*triage_files, *selected_files, *test_files]:
+        if repo_files and file_path not in repo_files:
+            continue
+        if file_path not in merged:
+            merged.append(file_path)
+        if len(merged) >= max_files:
+            break
+    return merged

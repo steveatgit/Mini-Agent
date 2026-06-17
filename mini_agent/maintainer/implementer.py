@@ -76,10 +76,10 @@ def extract_unified_diff(text: str) -> str:
 
     fenced = re.search(r"```(?:diff|patch)?\s*(diff --git .*?)```", text, flags=re.DOTALL)
     if fenced:
-        return fenced.group(1).strip() + "\n"
+        return _clean_model_patch_text(fenced.group(1))
     index = text.find("diff --git ")
     if index >= 0:
-        return text[index:].strip() + "\n"
+        return _clean_model_patch_text(text[index:])
     return ""
 
 
@@ -203,19 +203,44 @@ def _malformed_hunk_header(patch: str) -> str:
     return ""
 
 
+def _clean_model_patch_text(patch: str) -> str:
+    """Remove non-diff sentinels that models sometimes copy from patch formats."""
+
+    lines = [line for line in patch.strip().splitlines() if line.strip() != "*** End of File ***"]
+    return "\n".join(lines).strip() + "\n"
+
+
 def _normalize_bare_hunk_headers(repo_path: Path, patch: str) -> tuple[str, str]:
     """Fill in line ranges for bare '@@' hunk headers when the old lines are locatable."""
 
     lines = patch.splitlines()
     output: list[str] = []
     old_path = ""
+    new_path = ""
+    has_file_headers = False
     index = 0
     changed = False
     while index < len(lines):
         line = lines[index]
+        if line.startswith("diff --git "):
+            parts = line.split()
+            old_path = _clean_patch_path(parts[2]) if len(parts) >= 4 else ""
+            new_path = _clean_patch_path(parts[3]) if len(parts) >= 4 else old_path
+            has_file_headers = False
+            output.append(line)
+            index += 1
+            continue
         if line.startswith("--- "):
             parts = line.split(maxsplit=1)
             old_path = _clean_patch_path(parts[1]) if len(parts) == 2 and parts[1] != "/dev/null" else ""
+            has_file_headers = True
+            output.append(line)
+            index += 1
+            continue
+        if line.startswith("+++ "):
+            parts = line.split(maxsplit=1)
+            new_path = _clean_patch_path(parts[1]) if len(parts) == 2 and parts[1] != "/dev/null" else new_path
+            has_file_headers = True
             output.append(line)
             index += 1
             continue
@@ -228,6 +253,10 @@ def _normalize_bare_hunk_headers(repo_path: Path, patch: str) -> tuple[str, str]
             header, error = _infer_hunk_header(repo_path, old_path, hunk_lines)
             if error:
                 return patch, error
+            if not has_file_headers:
+                output.append(f"--- a/{old_path}")
+                output.append(f"+++ b/{new_path or old_path}")
+                has_file_headers = True
             output.append(header)
             output.extend(hunk_lines)
             changed = True
